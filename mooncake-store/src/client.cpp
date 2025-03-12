@@ -3,36 +3,56 @@
 #include <glog/logging.h>
 
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 
 #include "transfer_engine.h"
 #include "transport/transport.h"
 #include "types.h"
 
+// Macro for RPC calls with error handling and timing
+#define RPC_CALL_OR_RETURN(stub, method, request, response)                  \
+    [&]() -> ErrorCode {                                                     \
+        const auto _start_ts = std::chrono::steady_clock::now();             \
+        grpc::ClientContext _context;                                        \
+        grpc::Status _status =                                               \
+            (stub)->method(&_context, (request), &(response));               \
+        const auto _duration =                                               \
+            std::chrono::duration_cast<std::chrono::microseconds>(           \
+                std::chrono::steady_clock::now() - _start_ts);               \
+                                                                             \
+        VLOG(1) << #method ": rpc_request=" << (request).ShortDebugString(); \
+                                                                             \
+        if (!_status.ok()) {                                                 \
+            LOG(ERROR) << #method ": rpc_error [" << _status.error_code()    \
+                       << "] " << _status.error_message()                    \
+                       << " duration=" << _duration.count() << "us";         \
+            return ErrorCode::RPC_FAIL;                                      \
+        }                                                                    \
+                                                                             \
+        VLOG(1) << #method ": status_code=" << (response).status_code()      \
+                << " duration=" << _duration.count() << "us";                \
+                                                                             \
+        return fromInt((response).status_code());                            \
+    }()
+
+#define RETURN_ON_ERROR(expr, msg)                               \
+    do {                                                         \
+        ErrorCode __err__ = (expr);                              \
+        if (__err__ != ErrorCode::OK) {                          \
+            LOG(ERROR) << msg << " error_code=" << int(__err__); \
+            return __err__;                                      \
+        }                                                        \
+    } while (0)
+
 namespace mooncake {
+
 [[nodiscard]] size_t CalculateSliceSize(const std::vector<Slice>& slices) {
     size_t slice_size = 0;
     for (const auto& slice : slices) {
         slice_size += slice.size;
     }
     return slice_size;
-}
-
-template <typename RequestType, typename ResponseType>
-ErrorCode LogAndCheckRpcStatus(grpc::Status status,
-                               const ResponseType& response,
-                               const std::string& rpc_name,
-                               const RequestType& request) {
-    VLOG(1) << rpc_name << ": rpc_request=" << request.ShortDebugString();
-
-    if (!status.ok()) {
-        LOG(ERROR) << rpc_name << ": rpc error, code: " << status.error_code()
-                   << ", message: " << status.error_message();
-        return ErrorCode::RPC_FAIL;
-    }
-
-    VLOG(1) << rpc_name << ": status_code=" << response.status_code();
-    return fromInt(response.status_code());
 }
 
 Client::Client() : transfer_engine_(nullptr), master_stub_(nullptr) {}
@@ -43,8 +63,10 @@ ErrorCode Client::ConnectToMaster(const std::string& master_addr) {
     auto channel =
         grpc::CreateChannel(master_addr, grpc::InsecureChannelCredentials());
     master_stub_ = mooncake_store::MasterService::NewStub(channel);
-    CHECK(master_stub_) << "Failed to create master service stub";
-    LOG(INFO) << "master_service_stub_created=true master_addr=" << master_addr;
+    if (!master_stub_) {
+        LOG(ERROR) << "Failed to create master service stub";
+        return ErrorCode::INTERNAL_ERROR;
+    }
     return ErrorCode::OK;
 }
 
@@ -54,16 +76,26 @@ ErrorCode Client::InitTransferEngine(const std::string& local_hostname,
                                      void** protocol_args) {
     // Create transfer engine
     transfer_engine_ = std::make_unique<TransferEngine>();
-    CHECK(transfer_engine_) << "Failed to create transfer engine";
+    if (!transfer_engine_) {
+        LOG(ERROR) << "Failed to create transfer engine";
+        return ErrorCode::INTERNAL_ERROR;
+    }
 
     auto [hostname, port] = parseHostNameWithPort(local_hostname);
     int rc = transfer_engine_->init(metadata_connstring, local_hostname,
                                     hostname, port);
-    CHECK_EQ(rc, 0) << "Failed to initialize transfer engine";
+    if (rc != 0) {
+        LOG(ERROR) << "Failed to initialize transfer engine";
+        return ErrorCode::INTERNAL_ERROR;
+    }
     Transport* transport = nullptr;
     if (protocol == "rdma") {
         LOG(INFO) << "transport_type=rdma";
         transport = transfer_engine_->installTransport("rdma", protocol_args);
+        if (!transport) {
+            LOG(ERROR) << "Failed to install rdma transport";
+            return ErrorCode::INTERNAL_ERROR;
+        }
     } else if (protocol == "tcp") {
         LOG(INFO) << "transport_type=tcp";
         try {
@@ -87,31 +119,30 @@ ErrorCode Client::Init(const std::string& local_hostname,
                        const std::string& metadata_connstring,
                        const std::string& protocol, void** protocol_args,
                        const std::string& master_addr) {
-    if (transfer_engine_)
-        return ErrorCode::INTERNAL_ERROR;
+    if (transfer_engine_) return ErrorCode::INTERNAL_ERROR;
 
     // Store configuration
     local_hostname_ = local_hostname;
     metadata_connstring_ = metadata_connstring;
 
     // Connect to master service
-    ErrorCode err = ConnectToMaster(master_addr);
-    if (err != ErrorCode::OK) {
-        LOG(ERROR) << "Failed to connect to Master";
-        return err;
-    }
+    RETURN_ON_ERROR(ConnectToMaster(master_addr),
+                    "Failed to connect to Master");
 
-    LOG(INFO) << "Connect to Master success";
     // Initialize transfer engine
-    return InitTransferEngine(local_hostname, metadata_connstring, protocol,
-                              protocol_args);
+    RETURN_ON_ERROR(InitTransferEngine(local_hostname, metadata_connstring,
+                                       protocol, protocol_args),
+                    "Failed to initialize transfer engine");
+
+    return ErrorCode::OK;
 }
 
 ErrorCode Client::UnInit() {
     // Unmount all Segment
     auto mounted_segments = mounted_segments_;
-    for (auto &entry : mounted_segments) {
-        UnmountSegment(entry.first, entry.second);
+    for (auto& entry : mounted_segments) {
+        RETURN_ON_ERROR(UnmountSegment(entry.first, entry.second),
+                        "Failed to unmount segment");
     }
     transfer_engine_.reset();
     return ErrorCode::OK;
@@ -120,8 +151,7 @@ ErrorCode Client::UnInit() {
 ErrorCode Client::Get(const std::string& object_key,
                       std::vector<Slice>& slices) {
     ObjectInfo object_info;
-    auto err = Query(object_key, object_info);
-    if (err != ErrorCode::OK) return err;
+    RETURN_ON_ERROR(Query(object_key, object_info), "Failed to query object");
     return Get(object_key, object_info, slices);
 }
 
@@ -130,21 +160,13 @@ ErrorCode Client::Query(const std::string& object_key,
     // Get replica list from master
     mooncake_store::GetReplicaListRequest request;
     request.set_key(object_key);
-    grpc::ClientContext context;
 
-    grpc::Status status =
-        master_stub_->GetReplicaList(&context, request, &object_info);
-    ErrorCode err =
-        LogAndCheckRpcStatus(status, object_info, "GetReplicaList", request);
-    if (err != ErrorCode::OK) {
-        return err;
-    }
-
-    VLOG(1) << "GetReplicaList: replica_count="
-            << object_info.replica_list_size();
+    RETURN_ON_ERROR(
+        RPC_CALL_OR_RETURN(master_stub_, GetReplicaList, request, object_info),
+        "Failed to get replica list");
 
     if (object_info.replica_list().empty()) {
-        LOG(ERROR) << "object_not_found key=" << object_key;
+        LOG(ERROR) << "Internal error: object_info.replica_list().empty()";
         return ErrorCode::OBJECT_NOT_FOUND;
     }
 
@@ -173,15 +195,13 @@ ErrorCode Client::Get(const std::string& object_key,
                 handles.push_back(handle);
             }
 
-            if (TransferRead(handles, slices) != ErrorCode::OK) {
-                LOG(ERROR) << "transfer_read_failed key=" << object_key;
-                return ErrorCode::INVALID_PARAMS;
-            }
+            RETURN_ON_ERROR(TransferRead(handles, slices),
+                            "Failed to transfer read");
             return ErrorCode::OK;
         }
     }
 
-    LOG(ERROR) << "no_complete_replicas_found key=" << object_key;
+    LOG(ERROR) << "Internal error: no complete replicas found";
     return ErrorCode::INVALID_REPLICA;
 }
 
@@ -202,24 +222,11 @@ ErrorCode Client::Put(const ObjectKey& key, std::vector<Slice>& slices,
     replica_config->set_replica_num(config.replica_num);
 
     mooncake_store::PutStartResponse start_response;
-    grpc::ClientContext start_context;
 
-    grpc::Status status =
-        master_stub_->PutStart(&start_context, start_request, &start_response);
-    ErrorCode err =
-        LogAndCheckRpcStatus(status, start_response, "PutStart", start_request);
+    ErrorCode err = RPC_CALL_OR_RETURN(master_stub_, PutStart, start_request,
+                                       start_response);
     if (err != ErrorCode::OK) {
         return (err == ErrorCode::OBJECT_ALREADY_EXISTS) ? ErrorCode::OK : err;
-    }
-
-    VLOG(1) << "PutStart: replica_count=" << start_response.replica_list_size();
-
-    for (const auto& replica : start_response.replica_list()) {
-        for (const auto& handle : replica.handles()) {
-            VLOG(1) << "handle: buffer=" << handle.buffer()
-                    << " size=" << handle.size()
-                    << " segment_name=" << handle.segment_name();
-        }
     }
 
     // Transfer data using allocated handles from all replicas
@@ -235,10 +242,9 @@ ErrorCode Client::Put(const ObjectKey& key, std::vector<Slice>& slices,
             mooncake_store::PutRevokeRequest revoke_request;
             revoke_request.set_key(key);
             mooncake_store::PutRevokeResponse revoke_response;
-            grpc::ClientContext revoke_context;
-            status = master_stub_->PutRevoke(&revoke_context, revoke_request, &revoke_response);
-            LogAndCheckRpcStatus(status, revoke_response, "PutRevoke", revoke_request);
-            VLOG(1) << "PutRevoke: status_code=" << revoke_response.status_code();
+            RETURN_ON_ERROR(RPC_CALL_OR_RETURN(master_stub_, PutRevoke,
+                                               revoke_request, revoke_response),
+                            "Failed to revoke put");
             return transfer_err;
         }
     }
@@ -248,14 +254,9 @@ ErrorCode Client::Put(const ObjectKey& key, std::vector<Slice>& slices,
     end_request.set_key(key);
 
     mooncake_store::PutEndResponse end_response;
-    grpc::ClientContext end_context;
-
-    status = master_stub_->PutEnd(&end_context, end_request, &end_response);
-    err = LogAndCheckRpcStatus(status, end_response, "PutEnd", end_request);
-    if (err != ErrorCode::OK) {
-        return err;
-    }
-    VLOG(1) << "PutEnd: status_code=" << end_response.status_code();
+    RETURN_ON_ERROR(
+        RPC_CALL_OR_RETURN(master_stub_, PutEnd, end_request, end_response),
+        "Failed to end put");
 
     return ErrorCode::OK;
 }
@@ -265,13 +266,8 @@ ErrorCode Client::Remove(const ObjectKey& key) const {
     request.set_key(key);
 
     mooncake_store::RemoveResponse response;
-    grpc::ClientContext context;
-
-    grpc::Status status = master_stub_->Remove(&context, request, &response);
-    ErrorCode err = LogAndCheckRpcStatus(status, response, "Remove", request);
-    if (err != ErrorCode::OK) {
-        return err;
-    }
+    RETURN_ON_ERROR(RPC_CALL_OR_RETURN(master_stub_, Remove, request, response),
+                    "Failed to remove");
     return ErrorCode::OK;
 }
 
@@ -282,7 +278,6 @@ ErrorCode Client::MountSegment(const std::string& segment_name,
     request.set_buffer(reinterpret_cast<uint64_t>(buffer));
     request.set_size(size);
     mooncake_store::MountSegmentResponse response;
-    grpc::ClientContext context;
 
     int rc = transfer_engine_->registerLocalMemory((void*)buffer, size, "cpu:0",
                                                    true, true);
@@ -292,30 +287,21 @@ ErrorCode Client::MountSegment(const std::string& segment_name,
         return ErrorCode::INVALID_PARAMS;
     }
 
-    grpc::Status status =
-        master_stub_->MountSegment(&context, request, &response);
-    ErrorCode err =
-        LogAndCheckRpcStatus(status, response, "MountSegment", request);
-    if (err != ErrorCode::OK) {
-        return err;
-    }
-    mounted_segments_[segment_name] = (void *) buffer;
+    RETURN_ON_ERROR(
+        RPC_CALL_OR_RETURN(master_stub_, MountSegment, request, response),
+        "Failed to mount segment");
+    mounted_segments_[segment_name] = (void*)buffer;
     return ErrorCode::OK;
 }
 
-ErrorCode Client::UnmountSegment(const std::string& segment_name,
-                                 void* addr) {
+ErrorCode Client::UnmountSegment(const std::string& segment_name, void* addr) {
     mooncake_store::UnmountSegmentRequest request;
     request.set_segment_name(segment_name);
     mooncake_store::UnmountSegmentResponse response;
-    grpc::ClientContext context;
-    grpc::Status status =
-        master_stub_->UnmountSegment(&context, request, &response);
-    ErrorCode err =
-        LogAndCheckRpcStatus(status, response, "UnmountSegment", request);
-    if (err != ErrorCode::OK) {
-        return err;
-    }
+
+    RETURN_ON_ERROR(
+        RPC_CALL_OR_RETURN(master_stub_, UnmountSegment, request, response),
+        "Failed to unmount segment");
     int rc = transfer_engine_->unregisterLocalMemory(addr);
     if (rc != 0) {
         LOG(ERROR) << "Failed to unregister transfer buffer with transfer "
@@ -355,6 +341,7 @@ ErrorCode Client::TransferData(
     const std::vector<mooncake_store::BufHandle>& handles,
     std::vector<Slice>& slices, TransferRequest::OpCode op_code) const {
     std::vector<TransferRequest> transfer_tasks;
+
     if (handles.size() > slices.size()) {
         LOG(ERROR) << "invalid_partition_count handles_size=" << handles.size()
                    << " slices_size=" << slices.size();
