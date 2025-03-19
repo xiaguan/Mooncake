@@ -3,6 +3,7 @@
 #include <glog/logging.h>
 
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
@@ -36,9 +37,19 @@ ErrorCode LogAndCheckRpcStatus(grpc::Status status,
     return fromInt(response.status_code());
 }
 
-Client::Client() : transfer_engine_(nullptr), master_stub_(nullptr) {}
+Client::Client()
+    : transfer_engine_(nullptr),
+      master_stub_(nullptr),
+      transfer_time_(
+          "transfer_time", "transf",
+          {10,  20,  30,  40,  50,  60,  70,  80,   90,    100,    200,
+           300, 400, 500, 600, 700, 800, 900, 1000, 10000, 1000000}) {}
 
-Client::~Client() = default;
+Client::~Client() {
+    std::string json_format;
+    transfer_time_.serialize_to_json(json_format);
+    LOG(INFO) << "\nClient transfer time histogram:\n" << json_format;
+}
 
 ErrorCode Client::ConnectToMaster(const std::string& master_addr) {
     auto channel =
@@ -361,6 +372,7 @@ ErrorCode Client::IsExist(const std::string& key) const {
 ErrorCode Client::TransferData(
     const std::vector<mooncake_store::BufHandle>& handles,
     std::vector<Slice>& slices, TransferRequest::OpCode op_code) const {
+    auto start_transfer_time = std::chrono::high_resolution_clock::now();
     std::vector<TransferRequest> transfer_tasks;
     if (handles.size() > slices.size()) {
         LOG(ERROR) << "invalid_partition_count handles_size=" << handles.size()
@@ -452,7 +464,14 @@ ErrorCode Client::TransferData(
     }
 
     transfer_engine_->freeBatchID(batch_id);
-
+    auto end_transfer_time = std::chrono::high_resolution_clock::now();
+    uint64_t transfer_time =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            end_transfer_time - start_transfer_time)
+            .count();
+    // Use const_cast to properly handle const correctness
+    const_cast<ylt::metric::histogram_t&>(transfer_time_)
+        .observe(transfer_time);
     return ErrorCode::OK;
 }
 

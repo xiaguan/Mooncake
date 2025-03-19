@@ -26,7 +26,7 @@ BufHandle::~BufHandle() {
         VLOG(1) << "buf_handle_deallocated segment_id=" << segment_id
                 << " size=" << size;
     } else {
-        LOG(WARNING) << "allocator=expired_or_null in buf_handle_destructor";
+        VLOG(1) << "allocator=expired_or_null in buf_handle_destructor";
     }
 }
 

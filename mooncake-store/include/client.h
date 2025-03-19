@@ -9,6 +9,7 @@
 #include "master.grpc.pb.h"
 #include "transfer_engine.h"
 #include "types.h"
+#include "ylt/metric.hpp"
 
 namespace mooncake {
 
@@ -136,6 +137,12 @@ class Client {
      */
     ErrorCode IsExist(const std::string& key) const;
 
+    void log_transfer_time() {
+        std::string json_format;
+        transfer_time_.serialize_to_json(json_format);
+        LOG(INFO) << "\nClient transfer time histogram:\n" << json_format;
+    }
+
    private:
     /**
      * @brief Internal helper functions for initialization and data transfer
@@ -166,6 +173,8 @@ class Client {
     // Configuration
     std::string local_hostname_;
     std::string metadata_connstring_;
+    // Transfer time histogram in us
+    ylt::metric::histogram_t transfer_time_;
 };
 
 }  // namespace mooncake

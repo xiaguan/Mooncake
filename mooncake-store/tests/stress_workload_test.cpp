@@ -13,7 +13,7 @@
 #include "utils.h"
 
 DEFINE_string(protocol, "rdma", "Transfer protocol: rdma|tcp");
-DEFINE_string(device_name, "ibp6s0",
+DEFINE_string(device_name, "ibp51s0",
               "Device name to use, valid if protocol=rdma");
 DEFINE_string(master_address, "localhost:50051", "Address of master server");
 
