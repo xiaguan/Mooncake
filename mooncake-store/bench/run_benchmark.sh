@@ -22,7 +22,7 @@ REDIS_HOST="localhost"
 # Benchmark configuration
 ENGINE="mooncake"  # Options: redis, mooncake
 # 8mb
-VALUE_SIZE=16777200
+VALUE_SIZE=8388608
 NUM_OPS=3000
 NUM_THREADS=8
 
@@ -231,6 +231,11 @@ run_prefill() {
     # Wait for 1 seconds instead of waiting for completion
     log "Waiting for 1 seconds to consider prefill as successful..."
     sleep 1
+
+    # if redis, sleep for 20s
+    if [ "$ENGINE" = "redis" ]; then
+        sleep 20
+    fi
     
     log "Prefill considered successful"
     return 0

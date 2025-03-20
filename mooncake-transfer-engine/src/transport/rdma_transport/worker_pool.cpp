@@ -204,33 +204,6 @@ void WorkerPool::performPostSend(int thread_id) {
     for (auto &entry : local_slice_queue) {
         if (entry.second.empty()) continue;
 
-        if (entry.second[0]->target_id == LOCAL_SEGMENT_ID) {
-            for (auto &slice : entry.second) {
-                LOG_ASSERT(slice->target_id == LOCAL_SEGMENT_ID);
-#ifdef USE_CUDA
-                if (slice->opcode == TransferRequest::READ)
-                    cudaMemcpy(slice->source_addr,
-                               (void *)slice->rdma.dest_addr, slice->length,
-                               cudaMemcpyDefault);
-                else
-                    cudaMemcpy((void *)slice->rdma.dest_addr,
-                               slice->source_addr, slice->length,
-                               cudaMemcpyDefault);
-#else
-                if (slice->opcode == TransferRequest::READ)
-                    memcpy(slice->source_addr, (void *)slice->rdma.dest_addr,
-                           slice->length);
-                else
-                    memcpy((void *)slice->rdma.dest_addr, slice->source_addr,
-                           slice->length);
-#endif
-                slice->markSuccess();
-            }
-            processed_slice_count_.fetch_add(entry.second.size());
-            entry.second.clear();
-            continue;
-        }
-
 #ifdef USE_FAKE_POST_SEND
         for (auto &slice : entry.second) slice->markSuccess();
         processed_slice_count_.fetch_add(entry.second.size());
