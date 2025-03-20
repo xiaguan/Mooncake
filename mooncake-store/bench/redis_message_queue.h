@@ -32,7 +32,7 @@ class RedisMessageQueue {
     // Uses LPOP to get a message from the beginning of the queue.
     // If timeout_seconds > 0, uses BLPOP for blocking operation.
     bool Pop(const std::string& queue_name, std::string* message,
-             int timeout_seconds = 0);
+             int timeout_seconds = 5);
 
     // Get the length of the queue.
     // Returns -1 on error.

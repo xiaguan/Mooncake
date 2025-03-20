@@ -88,20 +88,32 @@ BenchmarkResult Benchmark::Run() {
     // Reset the exit signal
     should_exit_.store(false, std::memory_order_release);
 
-    // Launch worker threads
-    for (int i = 0; i < config_.num_threads; ++i) {
-        int start_idx = i * ops_per_thread;
-        int end_idx = start_idx + ops_per_thread;
-        if (i == config_.num_threads - 1) {
-            end_idx += remainder;  // Add remainder to the last thread
-        }
-
-        threads.emplace_back(&Benchmark::WorkerThread, this, i, start_idx,
-                             end_idx, &thread_throughputs[i], &completed_ops);
+    // Create a Redis message queue for the main thread
+    auto main_message_queue = std::make_unique<RedisMessageQueue>();
+    if (!main_message_queue->Init()) {
+        LOG(ERROR) << "Main thread failed to initialize Redis message queue";
+        return BenchmarkResult{0.0};
     }
 
-    // Wait for all operations to complete
+    // Clear synchronization queues to ensure clean state
+    main_message_queue->Clear("decode_ready");
+    main_message_queue->Clear("prefill_start");
+
+    // In decode mode, we're consuming from queues populated by prefill
     if (config_.mode == BenchmarkMode::kDecode) {
+        // Launch worker threads for decode
+        for (int i = 0; i < config_.num_threads; ++i) {
+            int start_idx = i * ops_per_thread;
+            int end_idx = start_idx + ops_per_thread;
+            if (i == config_.num_threads - 1) {
+                end_idx += remainder;  // Add remainder to the last thread
+            }
+
+            threads.emplace_back(&Benchmark::WorkerThread, this, i, start_idx,
+                                 end_idx, &thread_throughputs[i],
+                                 &completed_ops);
+        }
+
         // For decode mode, just wait for all operations to complete
         while (completed_ops.load(std::memory_order_acquire) <
                config_.num_operations) {
@@ -111,7 +123,51 @@ BenchmarkResult Benchmark::Run() {
                       << config_.num_operations;
         }
     } else {
-        // For prefill mode, first wait for all operations to complete
+        // In prefill mode:
+        // 1. Launch worker threads for prefill
+        // 2. Wait for all decode threads to signal they're ready (from a
+        // separate benchmark process)
+        // 3. Signal all prefill threads to start
+
+        // Launch worker threads for prefill
+        for (int i = 0; i < config_.num_threads; ++i) {
+            int start_idx = i * ops_per_thread;
+            int end_idx = start_idx + ops_per_thread;
+            if (i == config_.num_threads - 1) {
+                end_idx += remainder;  // Add remainder to the last thread
+            }
+
+            threads.emplace_back(&Benchmark::WorkerThread, this, i, start_idx,
+                                 end_idx, &thread_throughputs[i],
+                                 &completed_ops);
+        }
+
+        // Wait for decode threads from the other benchmark process to be ready
+        LOG(INFO) << "Main thread waiting for " << config_.num_threads
+                  << " decode ready signals";
+
+        int received_messages = 0;
+        while (received_messages < config_.num_threads) {
+            std::string ready_message;
+            if (main_message_queue->Pop("decode_ready", &ready_message, 60)) {
+                received_messages++;
+                LOG(INFO) << "Main thread received decode ready signal "
+                          << received_messages << "/" << config_.num_threads;
+            } else {
+                LOG(ERROR)
+                    << "Main thread timed out waiting for decode ready signal "
+                    << (received_messages + 1) << "/" << config_.num_threads;
+                break;  // Continue even if we don't receive all messages
+            }
+        }
+
+        // Signal all prefill threads to start
+        LOG(INFO) << "Main thread signaling prefill threads to start";
+        for (int i = 0; i < config_.num_threads; i++) {
+            main_message_queue->Push("prefill_start", "start");
+        }
+
+        // Wait for all prefill operations to complete
         while (completed_ops.load(std::memory_order_acquire) <
                config_.num_operations) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -120,36 +176,26 @@ BenchmarkResult Benchmark::Run() {
                       << config_.num_operations;
         }
 
-        // Then wait for completion messages from all decode threads
-        auto message_queue = std::make_unique<RedisMessageQueue>();
-        if (!message_queue->Init()) {
-            LOG(ERROR)
-                << "Main thread failed to initialize Redis message queue";
-        } else {
-            VLOG(1)
-                << "Main thread Redis message queue initialized successfully";
-        }
-
+        // Wait for completion messages from all decode threads
         LOG(INFO) << "Main thread waiting for " << config_.num_threads
                   << " completion messages from decode threads";
 
-        int received_messages = 0;
-        while (received_messages < config_.num_threads) {
+        int completion_messages_received = 0;
+        while (completion_messages_received < config_.num_threads) {
             std::string completion_message;
-            if (message_queue->Pop("decode", &completion_message, 60)) {
-                received_messages++;
+            if (main_message_queue->Pop("decode", &completion_message, 60)) {
+                completion_messages_received++;
                 LOG(INFO) << "Main thread received completion message "
-                          << received_messages << "/" << config_.num_threads;
+                          << completion_messages_received << "/"
+                          << config_.num_threads;
             } else {
                 LOG(ERROR)
                     << "Main thread timed out waiting for completion message "
-                    << (received_messages + 1) << "/" << config_.num_threads;
+                    << (completion_messages_received + 1) << "/"
+                    << config_.num_threads;
                 break;  // Continue even if we don't receive all messages
             }
         }
-
-        // Clean up message queue
-        message_queue->Close();
     }
 
     // Signal all threads to exit
@@ -174,6 +220,9 @@ BenchmarkResult Benchmark::Run() {
     LOG(INFO) << "Benchmark completed:";
     LOG(INFO) << "  Total throughput: " << result.throughput_gb_per_second
               << " GB/s";
+
+    // Clean up message queue
+    main_message_queue->Close();
 
     return result;
 }
@@ -202,9 +251,30 @@ void Benchmark::WorkerThread(int thread_id, int start_idx, int end_idx,
     *thread_throughput = 0.0;
 
     if (config_.mode == BenchmarkMode::kPrefill) {
+        // Wait for the signal to start prefill from main thread
+        LOG(INFO) << "Thread " << thread_id << " waiting for start signal";
+        std::string start_message;
+        bool received_start =
+            message_queue->Pop("prefill_start", &start_message, 300);
+        if (!received_start) {
+            LOG(ERROR) << "Thread " << thread_id
+                       << " timed out waiting for start signal";
+            return;
+        }
+        LOG(INFO) << "Thread " << thread_id
+                  << " received start signal, beginning prefill";
+
         PrefillData(thread_id, start_idx, end_idx, thread_throughput, completed,
                     engine.get(), message_queue.get());
     } else {
+        // In decode mode, signal readiness before starting
+        LOG(INFO) << "Thread " << thread_id << " signaling decode ready";
+        bool queue_success = message_queue->Push("decode_ready", "ready");
+        if (!queue_success) {
+            LOG(ERROR) << "Thread " << thread_id
+                       << " failed to push ready message";
+        }
+
         DecodeData(thread_id, start_idx, end_idx, thread_throughput, completed,
                    engine.get(), message_queue.get());
     }

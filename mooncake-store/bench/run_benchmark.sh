@@ -22,7 +22,7 @@ REDIS_HOST="localhost"
 # Benchmark configuration
 ENGINE="mooncake"  # Options: redis, mooncake
 # 8mb
-VALUE_SIZE=8388608
+VALUE_SIZE=16777200
 NUM_OPS=3000
 NUM_THREADS=8
 
