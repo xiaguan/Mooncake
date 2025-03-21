@@ -21,10 +21,10 @@ from typing import List, Tuple, Optional
 # tcp: 1.8875GB/s
 # rdma: 12.25GB/s
 BENCHMARK_SCRIPT = "./run_benchmark.sh"
-ENGINES = ["redis"]
-VALUE_SIZES = [8388608,16777200]
+ENGINES = ["mooncake"]
+VALUE_SIZES = [524288, 1048576, 8388608,16777200]
 THREAD_COUNTS = [2,4,8]
-# VALUE_SIZES = [16777200]
+# VALUE_SIZES = [524288]
 # THREAD_COUNTS = [2,4,8]
 NUM_OPS = 2000
 RESULTS_DIR = "./results"
