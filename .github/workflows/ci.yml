@@ -82,7 +82,7 @@ jobs:
 
           # Clone yalantinglibs
           if [ -d "yalantinglibs" ]; then rm -rf yalantinglibs; fi
-          git clone ${GITHUB_PROXY}/alibaba/yalantinglibs.git
+          git clone https://github.com/alibaba/yalantinglibs
           cd yalantinglibs
           mkdir -p build && cd build
 
