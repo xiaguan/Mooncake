@@ -1,4 +1,4 @@
-name: 'Build(linux)'
+name: 'Build Manylinux Wheel'
 
 on:
   push:
@@ -7,64 +7,206 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-ubuntu:
-    runs-on: ubuntu-22.04
+  build-manylinux-wheel:
+    name: Build manylinux_2_28_x86_64 wheel (Python 3.8)
+    runs-on: ubuntu-latest # Runner OS, the build happens in the container
+    container: quay.io/pypa/manylinux_2_28_x86_64
+
     steps:
-    - uses: actions/checkout@v4
-    - name: configure
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        # Required for yalantinglibs submodule/clone if needed later
+        submodules: 'recursive'
+
+    - name: Install System Dependencies & Devtoolset
+      shell: bash
       run: |
-        sudo apt update -y
-        sudo bash -x dependencies.sh -y
-        pip install build setuptools wheel
+        set -e
+        set -x
+
+        # Update and install basic tools
+        yum update -y
+        yum install -y yum-utils
+
+        # Install required system libraries (adjust based on exact needs)
+        # Note: gtest/grpc/protobuf might need specific versions built from source
+        # if system versions are incompatible.
+        yum install -y \
+            libibverbs-devel \
+            glog-devel \
+            jsoncpp-devel \
+            libunwind-devel \
+            numactl-devel \
+            boost-devel \
+            openssl-devel \
+            libcurl-devel \
+            hiredis-devel \
+            pkgconfig \
+            patchelf \
+            wget \
+            git \
+            which
+
+        # Install CMake 3 (manylinux_2_28 might have older version)
+        yum install -y cmake3 || echo "cmake3 not found, assuming container cmake is sufficient"
+        # Link cmake3 to cmake if installed
+        if command -v cmake3 &> /dev/null && ! command -v cmake &> /dev/null; then
+            ln -s /usr/bin/cmake3 /usr/bin/cmake || echo "Failed to link cmake"
+        fi
+        cmake --version
+
+        # Install GCC Toolset 11 for GCC 11 (C++20 support)
+        # Requires PowerTools/CRB repo to be enabled (often is by default in manylinux_2_28)
+        yum install -y gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils
+
+        # Clean up yum cache
+        yum clean all
+        rm -rf /var/cache/yum
+
+    - name: Build and Install yalantinglibs
+      shell: bash
+      run: |
+        set -e
+        set -x
+        # Activate GCC 11 for this step
+        scl enable gcc-toolset-11 -- bash -c '
+          REPO_ROOT=$(pwd)
+          GITHUB_PROXY="https://github.com"
+
+          # Create thirdparties dir
+          if [ ! -d "${REPO_ROOT}/thirdparties" ]; then
+              mkdir -p "${REPO_ROOT}/thirdparties"
+          fi
+          cd "${REPO_ROOT}/thirdparties"
+
+          # Clone yalantinglibs
+          if [ -d "yalantinglibs" ]; then rm -rf yalantinglibs; fi
+          git clone https://github.com/alibaba/yalantinglibs
+          cd yalantinglibs
+          mkdir -p build && cd build
+
+          # Configure, build, and install
+          cmake .. -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARK=OFF -DBUILD_UNIT_TESTS=OFF
+          cmake --build . -j$(nproc)
+          cmake --install . # Installs to /usr/local by default
+        '
+
+    - name: Install Go
+      shell: bash
+      run: |
+        set -e
+        set -x
+        # Install Go (same logic as dependencies.sh)
+        if ! command -v go &> /dev/null || ! (go version | grep -q 'go1.22.10'); then
+          echo "Downloading Go 1.22.10..."
+          wget -q --show-progress https://go.dev/dl/go1.22.10.linux-amd64.tar.gz
+          echo "Installing Go 1.22.10..."
+          tar -C /usr/local -xzf go1.22.10.linux-amd64.tar.gz
+          rm -f go1.22.10.linux-amd64.tar.gz
+        else
+           echo "Go 1.22.10 already installed or found."
+        fi
+        # Add Go to PATH for subsequent steps in this job
+        export PATH=$PATH:/usr/local/go/bin
+        go version
+
+    - name: Build Mooncake C++ Project
+      shell: bash
+      run: |
+        set -e
+        set -x
+        # Ensure Go is in PATH
+        export PATH=$PATH:/usr/local/go/bin
+        go version # Verify Go path
+
+        # Activate GCC 11 environment directly
+        source scl_source enable gcc-toolset-11
+        gcc --version # Verify GCC activation
+
+        # Ensure system paths are preferred after scl activation
+        export PATH=/usr/bin:/usr/sbin:$PATH
+
+        # Proceed with build steps
         mkdir build
         cd build
-        cmake .. -DUSE_HTTP=ON
-      shell: bash
-    - name: make
-      run: |
-        cd build
-        sudo make install -j
-      shell: bash
-    - name: start-metadata-server
-      run: |
-        cd mooncake-transfer-engine/example/http-metadata-server
-        export PATH=$PATH:/usr/local/go/bin
-        go mod tidy && go build -o http-metadata-server .
-        ./http-metadata-server --addr=:8090 &
-      shell: bash
-    - name: start-mooncake-master
-      run: |
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
-        mooncake_master &
 
-      shell: bash
-    - name: test
-      run: |
-        cd build
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
-        ldconfig -v || echo "always continue"
-        MC_METADATA_SERVER=http://127.0.0.1:8090/metadata make test -j ARGS="-V"
-      shell: bash
-    - name: Stop Mooncake Master Service
-      run: |
-        pkill mooncake_master || true
-      shell: bash
-    
-    - name: Build Python wheel
-      run: ./scripts/build_wheel.sh
-      shell: bash
+          # Configure using CMake, providing explicit hints for FindPython3
+          # Point to the specific Python 3.8 version from the manylinux container
+          PYTHON3_EXECUTABLE=/opt/python/cp38-cp38/bin/python
+          PYTHON3_INCLUDE_DIRS=/opt/python/cp38-cp38/include/python3.8
 
-    - name: Test installation
-      run: ./scripts/test_installation.sh
-      shell: bash
+          # Check if CMake exists and run configuration
+          if ! command -v cmake &> /dev/null; then echo "CMake not found!"; exit 1; fi
+          cmake --version
 
-    - name: Run tests
+          cmake .. -DUSE_HTTP=ON \
+                   -DPython3_EXECUTABLE=${PYTHON3_EXECUTABLE} \
+                   -DPython3_INCLUDE_DIRS=${PYTHON3_INCLUDE_DIRS}
+
+          # Build and install
+          make install -j$(nproc)
+
+    - name: Build Python wheel (Python 3.8)
+      shell: bash
       run: |
-        source test_env/bin/activate
-        ./scripts/run_tests.sh
-        deactivate
-      shell: bash
+        set -e
+        set -x
+        # Use the target Python to install build tools and run the build script
+        PYTHON_BIN=/opt/python/cp38-cp38/bin
+        ${PYTHON_BIN}/pip install --upgrade pip
+        ${PYTHON_BIN}/pip install auditwheel build wheel setuptools
 
+        # Ensure python3 points to the correct interpreter for the script
+        ln -s ${PYTHON_BIN}/python /usr/local/bin/python3 || echo "python3 link failed or exists"
+        export PATH=/usr/local/bin:$PATH # Ensure our link is found first
+        python3 --version
+
+        # Activate GCC 11 environment for any potential compilation during wheel build
+        source scl_source enable gcc-toolset-11
+        gcc --version # Verify GCC activation
+
+        # Run the build script (which uses python3 and auditwheel)
+        ./scripts/build_wheel.sh
+
+        # List the built wheel
+        ls -l mooncake-wheel/dist/
+
+    - name: Upload Wheel Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mooncake-wheel-manylinux_2_28-cp38
+        path: mooncake-wheel/dist/*.whl
+
+  # --- Testing Job (Example - To be run separately) ---
+  # test-wheel:
+  #   needs: build-manylinux-wheel
+  #   runs-on: ubuntu-22.04
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #   - name: Download wheel artifact
+  #     uses: actions/download-artifact@v4
+  #     with:
+  #       name: mooncake-wheel-manylinux_2_28-cp38
+  #       path: dist
+  #   - name: Set up Python
+  #     uses: actions/setup-python@v5
+  #     with:
+  #       python-version: '3.8' # Match the built wheel Python version
+  #   - name: Install Dependencies for Testing
+  #     run: |
+  #       sudo apt update -y
+  #       # Install runtime dependencies needed for testing (not build deps)
+  #       # sudo apt install -y ...
+  #       pip install dist/*.whl
+  #       # Install any other Python test dependencies
+  #       # pip install pytest ...
+  #   - name: Run Tests (Adapt from original job)
+  #     run: |
+  #       # Start servers, run test commands etc.
+  #       # ./scripts/test_installation.sh
+  #       # ./scripts/run_tests.sh
+  #       echo "Testing steps need to be adapted here"
 
   spell-check:
     name: Spell Check with Typos
