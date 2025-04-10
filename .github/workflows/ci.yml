@@ -53,9 +53,11 @@ jobs:
     - name: Stop mooncake master
       run: pkill -f mooncake_master || true
       shell: bash
-    
+
     - name: Build Python wheel
-      run: ./scripts/build_wheel.sh
+      run: |
+        pip install auditwheel
+        ./scripts/build_wheel.sh
       shell: bash
 
     - name: Test installation
