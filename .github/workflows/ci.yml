@@ -119,19 +119,24 @@ jobs:
         # Activate GCC 11 and ensure Go is in PATH
         export PATH=$PATH:/usr/local/go/bin
         scl enable gcc-toolset-11 -- bash -c '
+          # Ensure system paths are preferred to avoid potential pipx/user installed tools interfering
+          export PATH=/usr/bin:/usr/sbin:$PATH
+
           mkdir build
           cd build
 
-          # Configure using CMake (ensure it finds Python libs/includes)
-          # Point to the specific Python version we want to build against
-          PYTHON_EXECUTABLE=/opt/python/cp38-cp38/bin/python
-          PYTHON_INCLUDE_DIR=/opt/python/cp38-cp38/include/python3.8
-          PYTHON_LIBRARY=/opt/python/cp38-cp38/lib/libpython3.8.so # Adjust if static lib needed
+          # Configure using CMake, providing explicit hints for FindPython3
+          # Point to the specific Python 3.8 version from the manylinux container
+          PYTHON3_EXECUTABLE=/opt/python/cp38-cp38/bin/python
+          PYTHON3_INCLUDE_DIRS=/opt/python/cp38-cp38/include/python3.8
+
+          # Check if CMake exists and run configuration
+          if ! command -v cmake &> /dev/null; then echo "CMake not found!"; exit 1; fi
+          cmake --version
 
           cmake .. -DUSE_HTTP=ON \
-                   -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE} \
-                   -DPYTHON_INCLUDE_DIR=${PYTHON_INCLUDE_DIR} \
-                   -DPYTHON_LIBRARY=${PYTHON_LIBRARY}
+                   -DPython3_EXECUTABLE=${PYTHON3_EXECUTABLE} \
+                   -DPython3_INCLUDE_DIRS=${PYTHON3_INCLUDE_DIRS}
 
           # Build and install
           make install -j$(nproc)

@@ -115,18 +115,23 @@ jobs:
           # Activate GCC 11 and ensure Go is in PATH
           export PATH=$PATH:/usr/local/go/bin
           scl enable gcc-toolset-11 -- bash -c '
+            # Ensure system paths are preferred
+            export PATH=/usr/bin:/usr/sbin:$PATH
+
             mkdir build
             cd build
 
-            # Point to Python 3.10 within the container
-            PYTHON_EXECUTABLE=/opt/python/cp310-cp310/bin/python
-            PYTHON_INCLUDE_DIR=/opt/python/cp310-cp310/include/python3.10
-            PYTHON_LIBRARY=/opt/python/cp310-cp310/lib/libpython3.10.so # Adjust if static lib needed
+            # Point to Python 3.10 within the container using standard FindPython3 variables
+            PYTHON3_EXECUTABLE=/opt/python/cp310-cp310/bin/python
+            PYTHON3_INCLUDE_DIRS=/opt/python/cp310-cp310/include/python3.10
+
+            # Check if CMake exists and run configuration
+            if ! command -v cmake &> /dev/null; then echo "CMake not found!"; exit 1; fi
+            cmake --version
 
             cmake .. -DUSE_HTTP=ON \
-                     -DPYTHON_EXECUTABLE=${PYTHON_EXECUTABLE} \
-                     -DPYTHON_INCLUDE_DIR=${PYTHON_INCLUDE_DIR} \
-                     -DPYTHON_LIBRARY=${PYTHON_LIBRARY}
+                     -DPython3_EXECUTABLE=${PYTHON3_EXECUTABLE} \
+                     -DPython3_INCLUDE_DIRS=${PYTHON3_INCLUDE_DIRS}
 
             make install -j$(nproc)
           '
