@@ -53,8 +53,9 @@ jobs:
           fi
           cmake --version
 
-          # Install Devtoolset-10 for GCC 10 (C++20 support)
-          yum install -y devtoolset-10-gcc-c++ devtoolset-10-binutils
+          # Install GCC Toolset 11 for GCC 11 (C++20 support)
+          # Requires PowerTools/CRB repo to be enabled (often is by default in manylinux_2_28)
+          yum install -y gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils
 
           # Clean up yum cache
           yum clean all
@@ -65,8 +66,8 @@ jobs:
         run: |
           set -e
           set -x
-          # Activate GCC 10 for this step
-          scl enable devtoolset-10 -- bash -c '
+          # Activate GCC 11 for this step
+          scl enable gcc-toolset-11 -- bash -c '
             REPO_ROOT=$(pwd)
             GITHUB_PROXY="https://github.com"
 
@@ -111,9 +112,9 @@ jobs:
         run: |
           set -e
           set -x
-          # Activate GCC 10 and ensure Go is in PATH
+          # Activate GCC 11 and ensure Go is in PATH
           export PATH=$PATH:/usr/local/go/bin
-          scl enable devtoolset-10 -- bash -c '
+          scl enable gcc-toolset-11 -- bash -c '
             mkdir build
             cd build
 
@@ -148,9 +149,9 @@ jobs:
           export PATH=/usr/local/bin:$PATH
           python3 --version
 
-          # Run the build script with GCC 10 activated
+          # Run the build script with GCC 11 activated
           # The script reads the VERSION env var
-          scl enable devtoolset-10 -- bash ./scripts/build_wheel.sh
+          scl enable gcc-toolset-11 -- bash ./scripts/build_wheel.sh
 
           # List the built wheel
           ls -l mooncake-wheel/dist/
