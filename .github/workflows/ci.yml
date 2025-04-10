@@ -116,14 +116,20 @@ jobs:
       run: |
         set -e
         set -x
-        # Activate GCC 11 and ensure Go is in PATH
+        # Ensure Go is in PATH
         export PATH=$PATH:/usr/local/go/bin
-        scl enable gcc-toolset-11 -- bash -c '
-          # Ensure system paths are preferred to avoid potential pipx/user installed tools interfering
-          export PATH=/usr/bin:/usr/sbin:$PATH
+        go version # Verify Go path
 
-          mkdir build
-          cd build
+        # Activate GCC 11 environment directly
+        source scl_source enable gcc-toolset-11
+        gcc --version # Verify GCC activation
+
+        # Ensure system paths are preferred after scl activation
+        export PATH=/usr/bin:/usr/sbin:$PATH
+
+        # Proceed with build steps
+        mkdir build
+        cd build
 
           # Configure using CMake, providing explicit hints for FindPython3
           # Point to the specific Python 3.8 version from the manylinux container
@@ -140,7 +146,6 @@ jobs:
 
           # Build and install
           make install -j$(nproc)
-        '
 
     - name: Build Python wheel (Python 3.8)
       shell: bash
@@ -157,9 +162,12 @@ jobs:
         export PATH=/usr/local/bin:$PATH # Ensure our link is found first
         python3 --version
 
-        # Run the build script (which uses python3 and auditwheel)
         # Activate GCC 11 environment for any potential compilation during wheel build
-        scl enable gcc-toolset-11 -- bash ./scripts/build_wheel.sh
+        source scl_source enable gcc-toolset-11
+        gcc --version # Verify GCC activation
+
+        # Run the build script (which uses python3 and auditwheel)
+        ./scripts/build_wheel.sh
 
         # List the built wheel
         ls -l mooncake-wheel/dist/
