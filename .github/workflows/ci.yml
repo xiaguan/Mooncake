@@ -25,9 +25,9 @@ jobs:
         set -e
         set -x
 
-        # Update and install basic tools + CentOS SCL utils
+        # Update and install basic tools
         yum update -y
-        yum install -y yum-utils centos-release-scl-rh
+        yum install -y yum-utils
 
         # Install required system libraries (adjust based on exact needs)
         # Note: gtest/grpc/protobuf might need specific versions built from source
