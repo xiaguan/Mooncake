@@ -29,9 +29,10 @@ WHITELISTED_LIBS=(
     "libunwind.so"
     "libzstd.so"
     "libglog.so"
+    "libetcd_wrapper.so"
 )
 
-TARGET_DIR="mooncake-wheel/mooncake/lib_so/"
+TARGET_DIR="mooncake-wheel/mooncake/lib_so"
 mkdir -p "$TARGET_DIR" # Ensure target directory exists
 # --- Define common library paths to check ---
 SEARCH_PATHS=(
@@ -64,6 +65,7 @@ done
 
 echo "Library copying process finished."
 
+# Set RPATH for all binaries and shared objects
 patchelf --set-rpath '$ORIGIN/lib_so' --force-rpath mooncake-wheel/mooncake/mooncake_master
 patchelf --set-rpath '$ORIGIN/lib_so' --force-rpath mooncake-wheel/mooncake/*.so
 
