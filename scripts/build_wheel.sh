@@ -22,21 +22,47 @@ cp build/mooncake-integration/engine.*.so mooncake-wheel/mooncake/engine.so
 echo "Copying master binary and shared libraries..."
 # Copy master binary and shared libraries
 cp build/mooncake-store/src/mooncake_master mooncake-wheel/mooncake/
-cp build/mooncake-common/etcd/libetcd_wrapper.so mooncake-wheel/mooncake/lib_so/
 
+WHITELISTED_LIBS=(
+    "libgflags.so"
+    "libjsoncpp.so"
+    "libunwind.so"
+    "libzstd.so"
+    "libglog.so"
+)
 
-if ldd mooncake-wheel/mooncake/engine.so | grep -q "libetcd-cpp-api.so"; then
-  echo "Legacy etcd-cpp-api-v3 is enabled, adding dependent libraries..."
-
-  # Copy libetcd-cpp-api.so and its dependencies
-  if [ -f /usr/local/lib/libetcd-cpp-api.so ]; then
-    cp /usr/local/lib/libetcd-cpp-api.so mooncake-wheel/mooncake/lib_so/
-    echo "Copied etcd-cpp-api dependencies to wheel package"
-  else
-    echo "Warning: libetcd-cpp-api.so not found, skipping dependencies"
+TARGET_DIR="mooncake-wheel/mooncake/lib_so/"
+mkdir -p "$TARGET_DIR" # Ensure target directory exists
+# --- Define common library paths to check ---
+SEARCH_PATHS=(
+  /usr/local/lib
+  /usr/lib
+  /lib
+  /usr/lib64 
+  /lib64  
+  /lib/x86_64-linux-gnu/
+)
+# -----------------------------------------
+echo "Copying whitelisted libraries from multiple paths..."
+for lib in "${WHITELISTED_LIBS[@]}"; do
+  found="false" # Flag to track if lib was found
+  for search_dir in "${SEARCH_PATHS[@]}"; do
+    lib_path="$search_dir/$lib"
+    if [ -f "$lib_path" ]; then
+      echo "Found $lib in $search_dir. Copying..."
+      # Use -L to copy the actual file, not a symlink if it is one
+      cp -L "$lib_path" "$TARGET_DIR/" || echo "Error copying $lib_path"
+      found="true"
+      break # Stop searching other paths once found
+    fi
+  done
+  if [ "$found" = "false" ]; then
+    echo "Warning: $lib not found in any specified search paths: ${SEARCH_PATHS[*]}"
     exit 1
   fi
-fi
+done
+
+echo "Library copying process finished."
 
 patchelf --set-rpath '$ORIGIN/lib_so' --force-rpath mooncake-wheel/mooncake/mooncake_master
 patchelf --set-rpath '$ORIGIN/lib_so' --force-rpath mooncake-wheel/mooncake/*.so
