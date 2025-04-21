@@ -176,6 +176,7 @@ int SIEVEEndpointStore::deleteEndpoint(const std::string &peer_nic_path) {
 }
 
 void SIEVEEndpointStore::evictEndpoint() {
+    LOG(INFO) << "Evicting endpoint from SIEVEEndpointStore";
     if (fifo_list_.empty()) {
         return;
     }
