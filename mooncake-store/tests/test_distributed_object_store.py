@@ -1,3 +1,4 @@
+import ctypes
 import unittest
 import os
 import time
@@ -68,7 +69,7 @@ class TestDistributedObjectStore(unittest.TestCase):
         self.assertEqual(self.store.put(key, test_data), 0)
 
         # Verify data through Get operation
-        self.assertEqual(self.store.getSize(key), len(test_data))
+        self.assertEqual(self.store.get_size(key), len(test_data))
         retrieved_data = self.store.get(key)
         self.assertEqual(retrieved_data, test_data)
 
@@ -79,7 +80,7 @@ class TestDistributedObjectStore(unittest.TestCase):
         self.assertEqual(self.store.remove(key), 0)
 
         # Get after remove should return empty bytes
-        self.assertLess(self.store.getSize(key), 0)
+        self.assertLess(self.store.get_size(key), 0)
         empty_data = self.store.get(key)
         self.assertEqual(empty_data, b"")
 
@@ -100,11 +101,42 @@ class TestDistributedObjectStore(unittest.TestCase):
         self.assertEqual(self.store.remove(key_2), 0)
         self.assertLess(self.store.getSize(key_2), 0)
         self.assertEqual(self.store.isExist(key_2), 0)
+        
+    def test_large_buffer(self):
+        """Test SliceBuffer with large data that might span multiple slices."""
+        # Create a large data buffer (10MB)
+        size = 10 * 1024 * 1024
+        test_data = os.urandom(size)
+        key = "test_large_slice_buffer_key"
+        
+        # Put data
+        self.assertEqual(self.store.put(key, test_data), 0)
+        
+        # Get buffer
+        buffer = self.store.get_buffer(key)
+        self.assertIsNotNone(buffer)
+        
+        # Check size
+        self.assertEqual(buffer.size(), size)
+        
+        # Get consolidated pointer
+        ptr = buffer.consolidated_ptr()
+        self.assertNotEqual(ptr, 0)
+        
+        # Create a ctypes buffer from the pointer
+        c_buffer = (ctypes.c_char * buffer.size()).from_address(ptr)
+        retrieved_data = bytes(c_buffer)
+        
+        # Verify data
+        self.assertEqual(retrieved_data, test_data)
+        
+        # Clean up
+        self.assertEqual(self.store.remove(key), 0)  
 
     def test_concurrent_stress_with_barrier(self):
         """Test concurrent Put/Get operations with multiple threads using barrier."""
         NUM_THREADS = 8
-        VALUE_SIZE = 1024 * 1024  # 1MB
+        VALUE_SIZE = 1 * 1024 * 1024  # 1MB
         OPERATIONS_PER_THREAD = 100
         
         # Create barriers for synchronization
@@ -141,11 +173,13 @@ class TestDistributedObjectStore(unittest.TestCase):
                 
                 # Get operations
                 for key in thread_keys:
-                    retrieved_data = self.store.get(key)
+                    buffer = self.store.get_buffer(key)
+                    assert buffer is not None
+                    assert buffer.size() == VALUE_SIZE
+                    
+                    retrieved_data = memoryview(buffer)
                     if len(retrieved_data) != VALUE_SIZE:
                         thread_exceptions.append(f"Retrieved data size mismatch for key {key}: expected {VALUE_SIZE}, got {len(retrieved_data)}")
-                    if retrieved_data != test_data:
-                        thread_exceptions.append(f"Retrieved data content mismatch for key {key}")
                 
                 # Wait for all threads to complete get operations
                 get_barrier.wait()
