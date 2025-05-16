@@ -9,6 +9,7 @@ set(MOONCAKE_STORE_SOURCES
     master_client.cpp
     utils.cpp
     master_metric_manager.cpp
+    lmcache_notifier.cpp
 )
 
 # The cache_allocator library
@@ -18,7 +19,8 @@ target_link_libraries(mooncake_store PUBLIC transfer_engine glog::glog gflags::g
 
 
 # Master binary
-add_executable(mooncake_master master.cpp)
+add_executable(mooncake_master master.cpp lmcache_notifier.cpp)
+
 target_link_libraries(mooncake_master PRIVATE
     mooncake_store
     cachelib_memory_allocator

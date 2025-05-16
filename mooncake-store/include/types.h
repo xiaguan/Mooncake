@@ -150,6 +150,40 @@ inline std::ostream& operator<<(std::ostream& os,
 }
 
 /**
+ * @brief Type of storage location for buffer allocators
+ */
+enum class LocationType {
+    UNKNOWN = 0,  // Unknown or unspecified location
+    CPU_RAM = 1,  // CPU memory (RAM)
+    // Future location types can be added here as needed
+    // DISK_SSD = 2,          // SSD storage
+};
+
+/**
+ * @brief Convert LocationType to string representation for LMCache
+ * notifications
+ */
+inline std::string ToString(LocationType type) {
+    switch (type) {
+        case LocationType::CPU_RAM:
+            return "mooncake_cpu_ram";
+        // Add cases for future location types
+        case LocationType::UNKNOWN:
+        default:
+            return "mooncake_unknown";
+    }
+}
+
+/**
+ * @brief Stream operator for LocationType
+ */
+inline std::ostream& operator<<(std::ostream& os,
+                                const LocationType& type) noexcept {
+    os << ToString(type);
+    return os;
+}
+
+/**
  * @brief Configuration for replica management
  */
 struct ReplicateConfig {

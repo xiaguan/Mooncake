@@ -1,9 +1,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <thread>
-#include <ylt/coro_http/coro_http_client.hpp>
 #include <ylt/coro_http/coro_http_server.hpp>
 #include <ylt/reflection/user_reflect_macro.hpp>
 
@@ -61,9 +59,13 @@ constexpr uint64_t kMetricReportIntervalSeconds = 10;
 
 class WrappedMasterService {
    public:
-    WrappedMasterService(bool enable_gc, bool enable_metric_reporting = true,
-                         uint16_t http_port = 9003)
-        : master_service_(enable_gc),
+    explicit WrappedMasterService(bool enable_gc, bool enable_metric_reporting = true,
+                         uint16_t http_port = 9003,
+                         const std::string& lmcache_controller_url = "")
+        : master_service_(enable_gc, lmcache_controller_url.empty()
+                                         ? std::nullopt
+                                         : std::optional<std::string>(
+                                               lmcache_controller_url)),
           http_server_(4, http_port),
           metric_report_running_(enable_metric_reporting) {
         // Initialize HTTP server for metrics
@@ -285,8 +287,8 @@ class WrappedMasterService {
         MasterMetricManager::instance().inc_mount_segment_requests();
 
         MountSegmentResponse response;
-        response.error_code =
-            master_service_.MountSegment(buffer, size, segment_name);
+        response.error_code = master_service_.MountSegment(
+            buffer, size, segment_name, LocationType::CPU_RAM);
 
         // Track failures if needed
         if (response.error_code != ErrorCode::OK) {

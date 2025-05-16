@@ -1,21 +1,22 @@
 #pragma once
 
 #include <atomic>
-#include <boost/lockfree/queue.hpp>
 #include <chrono>
-#include <cstdint>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "allocation_strategy.h"
-#include "eviction_strategy.h"
 #include "allocator.h"
+#include "eviction_strategy.h"
+#include "lmcache_notifier.h"
+#include "object_metadata.h"
 #include "types.h"
-
 
 namespace mooncake {
 // Forward declarations
@@ -29,10 +30,10 @@ struct GCTask {
 
     GCTask() = default;
 
-    GCTask(const std::string& k, std::chrono::milliseconds delay)
-        : key(k), deletion_time(std::chrono::steady_clock::now() + delay) {}
+    GCTask(std::string  k, std::chrono::milliseconds delay)
+        : key(std::move(k)), deletion_time(std::chrono::steady_clock::now() + delay) {}
 
-    bool is_ready() const {
+    [[nodiscard]] bool is_ready() const {
         return std::chrono::steady_clock::now() >= deletion_time;
     }
 };
@@ -44,11 +45,19 @@ class BufferAllocatorManager {
 
     /**
      * @brief Register a new buffer for allocation
+     * @param segment_name Name of the memory segment
+     * @param base Base address of the memory segment
+     * @param size Size of the memory segment
+     * @param location_type Type of storage location for the segment
+     * @param instance_id Optional LMCache instance ID for notifications
+     * @param worker_id Optional LMCache worker ID for notifications
      * @return ErrorCode::OK on success, ErrorCode::INVALID_PARAMS if segment
      * exists
      */
     ErrorCode AddSegment(const std::string& segment_name, uint64_t base,
-                         uint64_t size);
+                         uint64_t size, LocationType location_type,
+                         std::optional<std::string> instance_id = std::nullopt,
+                         std::optional<int> worker_id = std::nullopt);
 
     /**
      * @brief Unregister a buffer
@@ -69,7 +78,7 @@ class BufferAllocatorManager {
     /**
      * @brief Get the mutex for thread-safe access
      */
-    std::shared_mutex& GetMutex() { return allocator_mutex_; }
+    std::shared_mutex& GetMutex() const { return allocator_mutex_; }
 
    private:
     // Protects the buffer allocator map (BufferAllocator is thread-safe by
@@ -83,22 +92,33 @@ class MasterService {
    private:
     // Comparator for GC tasks priority queue
     struct GCTaskComparator {
-        bool operator()(GCTask* a, GCTask* b) const {
+        bool operator()(const GCTask* a, const GCTask* b) const {
             return a->deletion_time > b->deletion_time;
         }
     };
 
    public:
-    MasterService(bool enable_gc = true);
+    explicit MasterService(
+        bool enable_gc = true,
+        std::optional<std::string> lmcache_controller_url = std::nullopt);
     ~MasterService();
 
     /**
      * @brief Mount a memory segment for buffer allocation
+     * @param buffer Base address of the memory segment
+     * @param size Size of the memory segment
+     * @param segment_name Name of the memory segment
+     * @param location_type Type of storage location for the segment
+     * @param instance_id Optional LMCache instance ID for notifications
+     * @param worker_id Optional LMCache worker ID for notifications
      * @return ErrorCode::OK on success, ErrorCode::INVALID_PARAMS if segment
      * exists or params invalid, ErrorCode::INTERNAL_ERROR if allocation fails
      */
-    ErrorCode MountSegment(uint64_t buffer, uint64_t size,
-                           const std::string& segment_name);
+    ErrorCode MountSegment(
+        uint64_t buffer, uint64_t size, const std::string& segment_name,
+        LocationType location_type = LocationType::CPU_RAM,
+        std::optional<std::string> instance_id = std::nullopt,
+        std::optional<int> worker_id = std::nullopt);
 
     /**
      * @brief Unmount a memory segment
@@ -168,7 +188,6 @@ class MasterService {
      */
     long RemoveAll();
 
-
     /**
      * @brief Get the count of keys
      * @return The count of keys
@@ -179,17 +198,10 @@ class MasterService {
     // GC thread function
     void GCThreadFunc();
 
-    // Internal data structures
-    struct ObjectMetadata {
-        std::vector<Replica> replicas;
-        size_t size;
-    };
-
     // Buffer allocator management
     std::shared_ptr<BufferAllocatorManager> buffer_allocator_manager_;
     std::shared_ptr<AllocationStrategy> allocation_strategy_;
     std::shared_ptr<EvictionStrategy> eviction_strategy_;
-
 
     static constexpr size_t kNumShards = 1024;  // Number of metadata shards
 
@@ -201,12 +213,17 @@ class MasterService {
     std::array<MetadataShard, kNumShards> metadata_shards_;
 
     // Helper to get shard index from key
-    size_t getShardIndex(const std::string& key) const {
+    static size_t getShardIndex(const std::string& key) {
         return std::hash<std::string>{}(key) % kNumShards;
     }
 
     // Helper to clean up stale handles pointing to unmounted segments
     bool CleanupStaleHandles(ObjectMetadata& metadata);
+
+    // Helper to send LMCache notifications
+    void send_lmcache_notification_internal_(
+        const std::string& key, const ObjectMetadata& metadata,
+        LMCacheNotifier::NotificationEventType event_type);
 
     // GC related members
     static constexpr size_t kGCQueueSize = 10 * 1024;  // Size of the GC queue
@@ -217,13 +234,16 @@ class MasterService {
     static constexpr uint64_t kGCThreadSleepMs =
         10;  // 10 ms sleep between GC checks
 
+    // LMCache notification
+    std::optional<std::unique_ptr<LMCacheNotifier>> lmcache_notifier_;
+
     // Helper class for accessing metadata with automatic locking and cleanup
     class MetadataAccessor {
        public:
         MetadataAccessor(MasterService* service, const std::string& key)
             : service_(service),
               key_(key),
-              shard_idx_(service_->getShardIndex(key)),
+              shard_idx_(mooncake::MasterService::getShardIndex(key)),
               lock_(service_->metadata_shards_[shard_idx_].mutex),
               it_(service_->metadata_shards_[shard_idx_].metadata.find(key)) {
             // Automatically clean up invalid handles
@@ -236,12 +256,12 @@ class MasterService {
         }
 
         // Check if metadata exists
-        bool Exists() const {
+        [[nodiscard]] bool Exists() const {
             return it_ != service_->metadata_shards_[shard_idx_].metadata.end();
         }
 
         // Get metadata (only call when Exists() is true)
-        ObjectMetadata& Get() { return it_->second; }
+        [[nodiscard]] ObjectMetadata& Get() const { return it_->second; }
 
         // Delete current metadata (for PutRevoke or Remove operations)
         void Erase() {
