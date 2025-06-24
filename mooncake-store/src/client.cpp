@@ -220,6 +220,16 @@ std::optional<std::shared_ptr<Client>> Client::Create(
     return client;
 }
 
+std::optional<std::shared_ptr<Client>> Client::CreateMasterOnly(
+    const std::string& master_server_entry) {
+    auto client = std::shared_ptr<Client>(new Client());
+    ErrorCode err = client->ConnectToMaster(master_server_entry);
+    if (err != ErrorCode::OK) {
+        return std::nullopt;
+    }
+    return client;
+}
+
 ErrorCode Client::Get(const std::string& object_key,
                       std::vector<Slice>& slices) {
     ObjectInfo object_info;

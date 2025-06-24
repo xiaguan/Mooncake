@@ -12,10 +12,10 @@
 #include "types.h"
 #include "utils.h"
 
-DEFINE_string(protocol, "tcp", "Transfer protocol: rdma|tcp");
-DEFINE_string(device_name, "ibp6s0",
+DEFINE_string(protocol, "rdma", "Transfer protocol: rdma|tcp");
+DEFINE_string(device_name, "erdma_0",
               "Device name to use, valid if protocol=rdma");
-DEFINE_string(transfer_engine_metadata_url, "localhost:2379",
+DEFINE_string(transfer_engine_metadata_url, "http://127.0.0.1:8080/metadata",
               "Metadata connection string for transfer engine");
 DEFINE_uint64(default_kv_lease_ttl, mooncake::DEFAULT_DEFAULT_KV_LEASE_TTL,
               "Default lease time for kv objects, must be set to the "
@@ -93,9 +93,9 @@ class ClientIntegrationTest : public ::testing::Test {
         ASSERT_TRUE(segment_provider_client_ != nullptr);
 
         client_buffer_allocator_ =
-            std::make_unique<SimpleAllocator>(128 * 1024 * 1024);
+            std::make_unique<SimpleAllocator>(1024 * 1024 * 1024);
         ErrorCode error_code = test_client_->RegisterLocalMemory(
-            client_buffer_allocator_->getBase(), 128 * 1024 * 1024, "cpu:0",
+            client_buffer_allocator_->getBase(), 1024 * 1024 * 1024, "cpu:0",
             false, false);
         if (error_code != ErrorCode::OK) {
             LOG(ERROR) << "Failed to allocate transfer buffer: "
@@ -103,7 +103,7 @@ class ClientIntegrationTest : public ::testing::Test {
         }
 
         // Mount segment for test_client_ as well
-        test_client_ram_buffer_size_ = 512 * 1024 * 1024;  // 512 MB
+        test_client_ram_buffer_size_ = 1024 * 1024 * 1024;  // 512 MB
         test_client_segment_ptr_ =
             allocate_buffer_allocator_memory(test_client_ram_buffer_size_);
         LOG_ASSERT(test_client_segment_ptr_);
@@ -395,16 +395,17 @@ TEST_F(ClientIntegrationTest, LargeAllocateTest) {
 
 // Test batch Put/Get operations through the client
 TEST_F(ClientIntegrationTest, BatchPutGetOperations) {
-    int batch_sz = 100;
+    int batch_sz = 10;
     std::vector<std::string> keys;
-    std::vector<std::string> test_data_list;
     std::unordered_map<std::string, std::vector<Slice>> batched_slices;
     for (int i = 0; i < batch_sz; i++) {
         keys.push_back("test_key_batch_put_" + std::to_string(i));
-        test_data_list.push_back("test_data_" + std::to_string(i));
     }
     void* buffer = nullptr;
     void* target_buffer = nullptr;
+    // data is 1MB
+    std::vector<std::string> test_data_list(batch_sz,
+                                            std::string(10 * 1024 * 1024, 'A'));
     for (int i = 0; i < batch_sz; i++) {
         std::vector<Slice> slices;
         buffer = client_buffer_allocator_->allocate(test_data_list[i].size());

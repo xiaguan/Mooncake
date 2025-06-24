@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdlib>  // for atexit
 #include <random>
 
@@ -141,6 +142,17 @@ DistributedObjectStore::DistributedObjectStore() {
 DistributedObjectStore::~DistributedObjectStore() {
     // Unregister from the tracker before cleanup
     ResourceTracker::getInstance().unregisterInstance(this);
+}
+
+int DistributedObjectStore::setup_master_only(
+    const std::string &master_server_addr) {
+    auto client_opt = mooncake::Client::CreateMasterOnly(master_server_addr);
+    if (!client_opt) {
+        LOG(ERROR) << "Failed to create client";
+        return 1;
+    }
+    this->client_ = std::move(client_opt.value());
+    return 0;
 }
 
 int DistributedObjectStore::setup(const std::string &local_hostname,
@@ -669,11 +681,19 @@ int DistributedObjectStore::get_into(const std::string &key, void *buffer,
         return -1;
     }
 
+    auto start_time = std::chrono::steady_clock::now();
+
     mooncake::Client::ObjectInfo object_info;
     ErrorCode error_code;
 
     // Step 1: Get object info
     error_code = client_->Query(key, object_info);
+    LOG(INFO) << "Query cost "
+              << std::chrono::duration_cast<std::chrono::microseconds>(
+                     std::chrono::steady_clock::now() - start_time)
+                     .count()
+              << "us";
+    start_time = std::chrono::steady_clock::now();
     if (error_code == ErrorCode::OBJECT_NOT_FOUND) {
         VLOG(1) << "Object not found for key: " << key;
         return -toInt(error_code);
@@ -722,6 +742,11 @@ int DistributedObjectStore::get_into(const std::string &key, void *buffer,
         return -toInt(error_code);
     }
 
+    LOG(INFO) << "Get cost "
+              << std::chrono::duration_cast<std::chrono::microseconds>(
+                     std::chrono::steady_clock::now() - start_time)
+                     .count()
+              << "us, total size is " << total_size;
     return static_cast<int>(total_size);
 }
 
@@ -807,6 +832,7 @@ PYBIND11_MODULE(store, m) {
     py::class_<DistributedObjectStore>(m, "MooncakeDistributedStore")
         .def(py::init<>())
         .def("setup", &DistributedObjectStore::setup)
+        .def("setup_master_only", &DistributedObjectStore::setup_master_only)
         .def("init_all", &DistributedObjectStore::initAll)
         .def("get", &DistributedObjectStore::get)
         .def("get_buffer", &DistributedObjectStore::get_buffer,

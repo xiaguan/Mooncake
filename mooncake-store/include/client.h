@@ -41,6 +41,9 @@ class Client {
         void** protocol_args,
         const std::string& master_server_entry = kDefaultMasterAddress);
 
+    static std::optional<std::shared_ptr<Client>> CreateMasterOnly(
+        const std::string& master_server_entry = kDefaultMasterAddress);
+
     /**
      * @brief Retrieves data for a given key
      * @param object_key Key to retrieve
@@ -205,6 +208,8 @@ class Client {
      */
     Client(const std::string& local_hostname,
            const std::string& metadata_connstring);
+
+    Client() = default;
 
     /**
      * @brief Internal helper functions for initialization and data transfer
