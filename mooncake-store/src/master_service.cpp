@@ -325,33 +325,15 @@ MasterService::BatchGetReplicaList(const std::vector<std::string>& keys) {
     return results;
 }
 
-auto MasterService::PutStart(const std::string& key,
-                             const std::vector<uint64_t>& slice_lengths,
+auto MasterService::PutStart(const std::string& key, uint64_t value_length,
                              const ReplicateConfig& config)
     -> tl::expected<std::vector<Replica::Descriptor>, ErrorCode> {
-    if (config.replica_num == 0 || key.empty() || slice_lengths.empty()) {
+    if (config.replica_num == 0 || key.empty() || value_length == 0) {
         LOG(ERROR) << "key=" << key << ", replica_num=" << config.replica_num
-                   << ", slice_count=" << slice_lengths.size()
+                   << ", value_length=" << value_length
                    << ", key_size=" << key.size() << ", error=invalid_params";
         return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
     }
-
-    // Validate slice lengths
-    uint64_t total_length = 0;
-    for (size_t i = 0; i < slice_lengths.size(); ++i) {
-        if (slice_lengths[i] > kMaxSliceSize) {
-            LOG(ERROR) << "key=" << key << ", slice_index=" << i
-                       << ", slice_size=" << slice_lengths[i]
-                       << ", max_size=" << kMaxSliceSize
-                       << ", error=invalid_slice_size";
-            return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
-        }
-        total_length += slice_lengths[i];
-    }
-
-    VLOG(1) << "key=" << key << ", value_length=" << total_length
-            << ", slice_count=" << slice_lengths.size() << ", config=" << config
-            << ", action=put_start_begin";
 
     // Lock the shard and check if object already exists
     size_t shard_idx = getShardIndex(key);
@@ -374,32 +356,19 @@ auto MasterService::PutStart(const std::string& key,
         auto& allocators_by_name = allocator_access.getAllocatorsByName();
         for (size_t i = 0; i < config.replica_num; ++i) {
             std::vector<std::unique_ptr<AllocatedBuffer>> handles;
-            handles.reserve(slice_lengths.size());
-
-            // Allocate space for each slice
-            for (size_t j = 0; j < slice_lengths.size(); ++j) {
-                auto chunk_size = slice_lengths[j];
-
-                // Use the unified allocation strategy with replica config
+            uint64_t remaining_size = value_length;
+            while (remaining_size > 0) {
+                auto chunk_size = std::min(remaining_size, kMaxSliceSize);
                 auto handle = allocation_strategy_->Allocate(
                     allocators, allocators_by_name, chunk_size, config);
-
                 if (!handle) {
-                    LOG(ERROR)
-                        << "key=" << key << ", replica_id=" << i
-                        << ", slice_index=" << j << ", error=allocation_failed";
-                    // If the allocation failed, we need to evict some objects
-                    // to free up space for future allocations.
-                    need_eviction_ = true;
-                    return tl::make_unexpected(ErrorCode::NO_AVAILABLE_HANDLE);
+                    LOG(ERROR) << "key=" << key << ", replica_id=" << i
+                               << ", slice_index=" << handles.size()
+                               << ", error=allocation_failed";
                 }
-
-                VLOG(1) << "key=" << key << ", replica_id=" << i
-                        << ", slice_index=" << j << ", handle=" << *handle
-                        << ", action=slice_allocated";
                 handles.emplace_back(std::move(handle));
+                remaining_size -= chunk_size;
             }
-
             replicas.emplace_back(std::move(handles),
                                   ReplicaStatus::PROCESSING);
         }
@@ -415,7 +384,7 @@ auto MasterService::PutStart(const std::string& key,
     // PutEnd is called.
     metadata_shards_[shard_idx].metadata.emplace(
         std::piecewise_construct, std::forward_as_tuple(key),
-        std::forward_as_tuple(total_length, std::move(replicas),
+        std::forward_as_tuple(value_length, std::move(replicas),
                               config.with_soft_pin));
     return replica_list;
 }

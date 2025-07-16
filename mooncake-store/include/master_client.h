@@ -72,28 +72,26 @@ class MasterClient {
     /**
      * @brief Starts a put operation
      * @param key Object key
-     * @param slice_lengths Vector of slice lengths
      * @param value_length Total value length
      * @param config Replication configuration
      * @return tl::expected<std::vector<Replica::Descriptor>, ErrorCode>
      * indicating success/failure
      */
     [[nodiscard]] tl::expected<std::vector<Replica::Descriptor>, ErrorCode>
-    PutStart(const std::string& key, const std::vector<size_t>& slice_lengths,
+    PutStart(const std::string& key, uint64_t value_length,
              const ReplicateConfig& config);
 
     /**
      * @brief Starts a batch of put operations for N objects
      * @param keys Vector of object key
      * @param value_lengths Vector of total value lengths
-     * @param slice_lengths Vector of vectors of slice lengths
      * @param config Replication configuration
      * @return ErrorCode indicating success/failure
      */
     [[nodiscard]] std::vector<
         tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
     BatchPutStart(const std::vector<std::string>& keys,
-                  const std::vector<std::vector<uint64_t>>& slice_lengths,
+                  const std::vector<uint64_t>& value_lengths,
                   const ReplicateConfig& config);
 
     /**

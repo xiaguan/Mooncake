@@ -107,24 +107,23 @@ class Client {
     /**
      * @brief Stores data with replication
      * @param key Object key
-     * @param slices Vector of data slices to store
+     * @param data Data to store
      * @param config Replication configuration
      * @return ErrorCode indicating success/failure
      */
     tl::expected<void, ErrorCode> Put(const ObjectKey& key,
-                                      std::vector<Slice>& slices,
+                                      std::span<const std::byte> data,
                                       const ReplicateConfig& config);
 
     /**
      * @brief Batch put data with replication
      * @param keys Object keys
-     * @param batched_slices Vector of vectors of data slices to store (indexed
-     * to match keys)
+     * @param data Vector of data to store (indexed to match keys)
      * @param config Replication configuration
      */
     std::vector<tl::expected<void, ErrorCode>> BatchPut(
         const std::vector<ObjectKey>& keys,
-        std::vector<std::vector<Slice>>& batched_slices,
+        std::vector<std::span<const std::byte>>& data,
         const ReplicateConfig& config);
 
     /**

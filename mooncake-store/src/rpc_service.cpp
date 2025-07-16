@@ -256,15 +256,13 @@ WrappedMasterService::BatchGetReplicaList(
 }
 
 tl::expected<std::vector<Replica::Descriptor>, ErrorCode>
-WrappedMasterService::PutStart(const std::string& key,
-                               const std::vector<uint64_t>& slice_lengths,
+WrappedMasterService::PutStart(const std::string& key, uint64_t value_length,
                                const ReplicateConfig& config) {
     return execute_rpc(
         "PutStart",
-        [&] { return master_service_.PutStart(key, slice_lengths, config); },
+        [&] { return master_service_.PutStart(key, value_length, config); },
         [&](auto& timer) {
-            timer.LogRequest("key=", key,
-                             ", slice_lengths=", slice_lengths.size());
+            timer.LogRequest("key=", key, ", value_length=", value_length);
         },
         [&] { MasterMetricManager::instance().inc_put_start_requests(); },
         [] { MasterMetricManager::instance().inc_put_start_failures(); });
@@ -289,10 +287,9 @@ tl::expected<void, ErrorCode> WrappedMasterService::PutRevoke(
 }
 
 std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
-WrappedMasterService::BatchPutStart(
-    const std::vector<std::string>& keys,
-    const std::vector<std::vector<uint64_t>>& slice_lengths,
-    const ReplicateConfig& config) {
+WrappedMasterService::BatchPutStart(const std::vector<std::string>& keys,
+                                    const std::vector<uint64_t>& slice_lengths,
+                                    const ReplicateConfig& config) {
     ScopedVLogTimer timer(1, "BatchPutStart");
     timer.LogRequest("keys_count=", keys.size());
     MasterMetricManager::instance().inc_batch_put_start_requests();

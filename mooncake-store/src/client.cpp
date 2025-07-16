@@ -14,6 +14,8 @@
 #include "transport/transport.h"
 #include "types.h"
 
+static_assert(CHAR_BIT == 8, "This code assumes an 8-bit byte");
+
 namespace mooncake {
 
 [[nodiscard]] size_t CalculateSliceSize(const std::vector<Slice>& slices) {
@@ -461,16 +463,10 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
 }
 
 tl::expected<void, ErrorCode> Client::Put(const ObjectKey& key,
-                                          std::vector<Slice>& slices,
+                                          std::span<const std::byte> data,
                                           const ReplicateConfig& config) {
-    // Prepare slice lengths
-    std::vector<size_t> slice_lengths;
-    for (size_t i = 0; i < slices.size(); ++i) {
-        slice_lengths.emplace_back(slices[i].size);
-    }
-
     // Start put operation
-    auto start_result = master_client_.PutStart(key, slice_lengths, config);
+    auto start_result = master_client_.PutStart(key, data.size_bytes(), config);
     if (!start_result) {
         ErrorCode err = start_result.error();
         if (err == ErrorCode::OBJECT_ALREADY_EXISTS) {
@@ -479,6 +475,18 @@ tl::expected<void, ErrorCode> Client::Put(const ObjectKey& key,
         }
         LOG(ERROR) << "Failed to start put operation: " << err;
         return tl::unexpected(err);
+    }
+
+    // split data into slices
+    std::vector<Slice> slices;
+    size_t offset = 0;
+    for (const auto& replica : start_result.value()) {
+        for (const auto& handle :
+             replica.get_memory_descriptor().buffer_descriptors) {
+            auto sub_span = data.subspan(offset, handle.size_);
+            slices.emplace_back((void*)sub_span.data(), sub_span.size());
+            offset += handle.size_;
+        }
     }
 
     // Transfer data using allocated handles from all replicas

@@ -197,11 +197,10 @@ MasterClient::BatchGetReplicaList(const std::vector<std::string>& object_keys) {
 }
 
 tl::expected<std::vector<Replica::Descriptor>, ErrorCode>
-MasterClient::PutStart(const std::string& key,
-                       const std::vector<size_t>& slice_lengths,
+MasterClient::PutStart(const std::string& key, uint64_t value_length,
                        const ReplicateConfig& config) {
     ScopedVLogTimer timer(1, "MasterClient::PutStart");
-    timer.LogRequest("key=", key, ", slice_count=", slice_lengths.size());
+    timer.LogRequest("key=", key, ", value_length=", value_length);
 
     auto client = client_accessor_.GetClient();
     if (!client) {
@@ -210,15 +209,8 @@ MasterClient::PutStart(const std::string& key,
         return tl::make_unexpected(ErrorCode::RPC_FAIL);
     }
 
-    // Convert size_t to uint64_t for RPC
-    std::vector<uint64_t> rpc_slice_lengths;
-    rpc_slice_lengths.reserve(slice_lengths.size());
-    for (const auto& length : slice_lengths) {
-        rpc_slice_lengths.push_back(length);
-    }
-
     auto request_result = client->send_request<&WrappedMasterService::PutStart>(
-        key, rpc_slice_lengths, config);
+        key, value_length, config);
     auto result = coro::syncAwait(
         [&]() -> coro::Lazy<
                   tl::expected<std::vector<Replica::Descriptor>, ErrorCode>> {
@@ -235,10 +227,9 @@ MasterClient::PutStart(const std::string& key,
 }
 
 std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
-MasterClient::BatchPutStart(
-    const std::vector<std::string>& keys,
-    const std::vector<std::vector<uint64_t>>& slice_lengths,
-    const ReplicateConfig& config) {
+MasterClient::BatchPutStart(const std::vector<std::string>& keys,
+                            const std::vector<uint64_t>& value_lengths,
+                            const ReplicateConfig& config) {
     ScopedVLogTimer timer(1, "MasterClient::BatchPutStart");
     timer.LogRequest("keys_count=", keys.size());
 
@@ -254,7 +245,7 @@ MasterClient::BatchPutStart(
 
     auto request_result =
         client->send_request<&WrappedMasterService::BatchPutStart>(
-            keys, slice_lengths, config);
+            keys, value_lengths, config);
 
     auto result = coro::syncAwait(
         [&]() -> coro::Lazy<std::vector<

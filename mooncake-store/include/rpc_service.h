@@ -46,7 +46,7 @@ class WrappedMasterService {
     BatchGetReplicaList(const std::vector<std::string>& keys);
 
     tl::expected<std::vector<Replica::Descriptor>, ErrorCode> PutStart(
-        const std::string& key, const std::vector<uint64_t>& slice_lengths,
+        const std::string& key, uint64_t value_length,
         const ReplicateConfig& config);
 
     tl::expected<void, ErrorCode> PutEnd(const std::string& key);
@@ -55,7 +55,7 @@ class WrappedMasterService {
 
     std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
     BatchPutStart(const std::vector<std::string>& keys,
-                  const std::vector<std::vector<uint64_t>>& slice_lengths,
+                  const std::vector<uint64_t>& value_lengths,
                   const ReplicateConfig& config);
 
     std::vector<tl::expected<void, ErrorCode>> BatchPutEnd(

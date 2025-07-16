@@ -172,8 +172,7 @@ class MasterService {
      *         ErrorCode::NO_AVAILABLE_HANDLE if allocation fails,
      *         ErrorCode::INVALID_PARAMS if slice size is invalid
      */
-    auto PutStart(const std::string& key,
-                  const std::vector<uint64_t>& slice_lengths,
+    auto PutStart(const std::string& key, uint64_t value_length,
                   const ReplicateConfig& config)
         -> tl::expected<std::vector<Replica::Descriptor>, ErrorCode>;
 
