@@ -1448,26 +1448,40 @@ PYBIND11_MODULE(store, m) {
     // Define the DistributedObjectStore class
     py::class_<DistributedObjectStore>(m, "MooncakeDistributedStore")
         .def(py::init<>())
-        .def("setup", &DistributedObjectStore::setup)
-        .def("init_all", &DistributedObjectStore::initAll)
-        .def("get", &DistributedObjectStore::get)
-        .def("get_batch", &DistributedObjectStore::get_batch)
-        .def("get_buffer", &DistributedObjectStore::get_buffer,
+        .def("setup", &DistributedObjectStore::setup, py::arg("local_hostname"),
+             py::arg("metadata_server"), py::arg("global_segment_size"),
+             py::arg("local_buffer_size"), py::arg("protocol"),
+             py::arg("rdma_devices"), py::arg("master_server_addr"))
+        .def("init_all", &DistributedObjectStore::initAll, py::arg("protocol"),
+             py::arg("device_name"), py::arg("mount_segment_size"),
+             "Initialize all components with basic parameters. Note: setup() "
+             "is recommended for production use as it provides more control "
+             "over configuration parameters.")
+        .def("get", &DistributedObjectStore::get, py::arg("key"),
+             "Get the value associated with the given key")
+        .def("get_batch", &DistributedObjectStore::get_batch, py::arg("keys"),
+             "Get values for multiple keys in a batch operation")
+        .def("get_buffer", &DistributedObjectStore::get_buffer, py::arg("key"),
              py::call_guard<py::gil_scoped_release>(),
-             py::return_value_policy::take_ownership)
-        .def("remove", &DistributedObjectStore::remove,
-             py::call_guard<py::gil_scoped_release>())
+             py::return_value_policy::take_ownership,
+             "Get object data as a buffer without copying the data")
+        .def("remove", &DistributedObjectStore::remove, py::arg("key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Remove the object associated with the given key")
         .def("remove_all", &DistributedObjectStore::removeAll,
-             py::call_guard<py::gil_scoped_release>())
-        .def("is_exist", &DistributedObjectStore::isExist,
-             py::call_guard<py::gil_scoped_release>())
+             py::call_guard<py::gil_scoped_release>(),
+             "Remove all objects from the store")
+        .def("is_exist", &DistributedObjectStore::isExist, py::arg("key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Check if an object exists in the store")
         .def("batch_is_exist", &DistributedObjectStore::batchIsExist,
              py::call_guard<py::gil_scoped_release>(), py::arg("keys"),
              "Check if multiple objects exist. Returns list of results: 1 if "
              "exists, 0 if not exists, -1 if error")
         .def("close", &DistributedObjectStore::tearDownAll)
-        .def("get_size", &DistributedObjectStore::getSize,
-             py::call_guard<py::gil_scoped_release>())
+        .def("get_size", &DistributedObjectStore::getSize, py::arg("key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Get the size of the value associated with the given key")
         .def("get_tensor", &DistributedObjectStore::get_tensor, py::arg("key"),
              py::arg("dtype"), "Get a PyTorch tensor from the store")
         .def("put_tensor", &DistributedObjectStore::put_tensor, py::arg("key"),

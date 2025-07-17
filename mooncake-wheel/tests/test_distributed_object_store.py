@@ -20,13 +20,13 @@ def get_client(store):
     master_server_address = os.getenv("MASTER_SERVER", "127.0.0.1:50051")
     
     retcode = store.setup(
-        local_hostname, 
-        metadata_server, 
-        global_segment_size,
-        local_buffer_size, 
-        protocol, 
-        device_name,
-        master_server_address
+        local_hostname=local_hostname, 
+        metadata_server=metadata_server, 
+        global_segment_size=global_segment_size,
+        local_buffer_size=local_buffer_size, 
+        protocol=protocol, 
+        rdma_devices=device_name,
+        master_server_addr=master_server_address
     )
     
     if retcode:
@@ -106,7 +106,7 @@ class TestDistributedObjectStore(unittest.TestCase):
             self.assertEqual(self.store.put(key, test_data), 0)
 
         # Test batch_is_exist with mixed existing and non-existing keys
-        results = self.store.batch_is_exist(keys)
+        results = self.store.batch_is_exist(keys=keys)
 
         # Verify results
         self.assertEqual(len(results), len(keys))
@@ -120,16 +120,16 @@ class TestDistributedObjectStore(unittest.TestCase):
             self.assertEqual(results[i], 0, f"Key {keys[i]} should not exist but got {results[i]}")
 
         # Test with empty keys list
-        empty_results = self.store.batch_is_exist([])
+        empty_results = self.store.batch_is_exist(keys=[])
         self.assertEqual(len(empty_results), 0)
 
         # Test with single key
-        single_result = self.store.batch_is_exist([existing_keys[0]])
+        single_result = self.store.batch_is_exist(keys=[existing_keys[0]])
         self.assertEqual(len(single_result), 1)
         self.assertEqual(single_result[0], 1)
 
         # Test with non-existent key
-        non_existent_result = self.store.batch_is_exist(["non_existent_key"])
+        non_existent_result = self.store.batch_is_exist(keys=["non_existent_key"])
         self.assertEqual(len(non_existent_result), 1)
         self.assertEqual(non_existent_result[0], 0)
         
@@ -598,7 +598,7 @@ class TestDistributedObjectStore(unittest.TestCase):
         values = [b"Batch Data 1", b"Batch Data 2", b"Batch Data 3"]
         
         # Test with default config (backward compatibility)
-        result = self.store.put_batch(keys, values)
+        result = self.store.put_batch(keys=keys, values=values)
         self.assertEqual(result, 0)
         
         # Verify data
