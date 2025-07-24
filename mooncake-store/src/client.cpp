@@ -562,6 +562,10 @@ class PutOperation {
         } else {
             state = PutOperationState::FINALIZE_FAILED;
         }
+        if (error == ErrorCode::OBJECT_ALREADY_EXISTS) {
+            SetSuccess();
+            return;
+        }
         LOG(WARNING) << "Put operation failed for key " << key << ", context: "
                      << failure_context.value_or("unknown error");
     }

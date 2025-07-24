@@ -657,6 +657,89 @@ TEST_F(ClientIntegrationTest, BatchPutDuplicateKeys) {
     ASSERT_TRUE(remove_result);
 }
 
+// Test BatchPut with mixed existing and new keys
+TEST_F(ClientIntegrationTest, BatchPutMixedExistingAndNewKeys) {
+    const std::string existing_data = "existing_key_data";
+    const std::string new_data = "new_key_data";
+    const std::string existing_key = "mixed_test_existing_key";
+    const std::string new_key = "mixed_test_new_key";
+
+    // First, put the "existing" key
+    void* buffer = client_buffer_allocator_->allocate(existing_data.size());
+    memcpy(buffer, existing_data.data(), existing_data.size());
+    std::vector<Slice> slices;
+    slices.emplace_back(Slice{buffer, existing_data.size()});
+    ReplicateConfig config;
+    config.replica_num = 1;
+
+    auto first_put_result = test_client_->Put(existing_key, slices, config);
+    ASSERT_TRUE(first_put_result.has_value())
+        << "Initial Put operation failed: "
+        << toString(first_put_result.error());
+    client_buffer_allocator_->deallocate(buffer, existing_data.size());
+
+    // Now prepare BatchPut with mixed keys: one existing, one new
+    std::vector<std::string> keys = {existing_key, new_key};
+    std::vector<std::vector<Slice>> batched_slices;
+
+    // Prepare data for existing key (will trigger OBJECT_ALREADY_EXISTS)
+    std::vector<Slice> existing_slices;
+    void* existing_buffer =
+        client_buffer_allocator_->allocate(existing_data.size());
+    memcpy(existing_buffer, existing_data.data(), existing_data.size());
+    existing_slices.emplace_back(Slice{existing_buffer, existing_data.size()});
+    batched_slices.push_back(std::move(existing_slices));
+
+    // Prepare data for new key (should succeed normally)
+    std::vector<Slice> new_slices;
+    void* new_buffer = client_buffer_allocator_->allocate(new_data.size());
+    memcpy(new_buffer, new_data.data(), new_data.size());
+    new_slices.emplace_back(Slice{new_buffer, new_data.size()});
+    batched_slices.push_back(std::move(new_slices));
+
+    // Execute BatchPut with mixed scenario
+    auto batch_put_results =
+        test_client_->BatchPut(keys, batched_slices, config);
+
+    // Verify results
+    ASSERT_EQ(batch_put_results.size(), 2);
+
+    // Both operations should succeed:
+    // - existing_key: OBJECT_ALREADY_EXISTS treated as success
+    // - new_key: normal success
+    ASSERT_TRUE(batch_put_results[0].has_value())
+        << "BatchPut for existing key should succeed (OBJECT_ALREADY_EXISTS as "
+           "success): "
+        << toString(batch_put_results[0].error());
+    ASSERT_TRUE(batch_put_results[1].has_value())
+        << "BatchPut for new key should succeed: "
+        << toString(batch_put_results[1].error());
+
+    // Verify both keys exist and can be retrieved
+    auto exist_existing = test_client_->IsExist(existing_key);
+    ASSERT_TRUE(exist_existing.has_value() && exist_existing.value())
+        << "Existing key should still exist";
+
+    auto exist_new = test_client_->IsExist(new_key);
+    ASSERT_TRUE(exist_new.has_value() && exist_new.value())
+        << "New key should exist after BatchPut";
+
+    // Clean up allocated memory
+    client_buffer_allocator_->deallocate(existing_buffer, existing_data.size());
+    client_buffer_allocator_->deallocate(new_buffer, new_data.size());
+
+    // Clean up keys
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(default_kv_lease_ttl_));
+    auto remove_existing = test_client_->Remove(existing_key);
+    ASSERT_TRUE(remove_existing.has_value())
+        << "Remove existing key failed: " << toString(remove_existing.error());
+
+    auto remove_new = test_client_->Remove(new_key);
+    ASSERT_TRUE(remove_new.has_value())
+        << "Remove new key failed: " << toString(remove_new.error());
+}
+
 }  // namespace testing
 
 }  // namespace mooncake

@@ -360,7 +360,7 @@ auto MasterService::PutStart(const std::string& key,
     auto it = metadata_shards_[shard_idx].metadata.find(key);
     if (it != metadata_shards_[shard_idx].metadata.end() &&
         !CleanupStaleHandles(it->second)) {
-        LOG(INFO) << "key=" << key << ", info=object_already_exists";
+        VLOG(1) << "key=" << key << ", info=object_already_exists";
         return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
     }
 
