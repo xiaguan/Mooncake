@@ -41,8 +41,7 @@ class Client {
      */
     static std::optional<std::shared_ptr<Client>> Create(
         const std::string& local_hostname,
-        const std::string& metadata_connstring, const std::string& protocol,
-        void** protocol_args,
+        const std::string& metadata_connstring,
         const std::string& master_server_entry = kDefaultMasterAddress);
 
     /**
@@ -209,9 +208,8 @@ class Client {
      */
     ErrorCode ConnectToMaster(const std::string& master_server_entry);
     ErrorCode InitTransferEngine(const std::string& local_hostname,
-                                 const std::string& metadata_connstring,
-                                 const std::string& protocol,
-                                 void** protocol_args);
+                                 const std::string& metadata_connstring);
+
     ErrorCode TransferData(const Replica::Descriptor& replica,
                            std::vector<Slice>& slices,
                            TransferRequest::OpCode op_code);

@@ -191,42 +191,15 @@ ErrorCode Client::ConnectToMaster(const std::string& master_server_entry) {
 }
 
 ErrorCode Client::InitTransferEngine(const std::string& local_hostname,
-                                     const std::string& metadata_connstring,
-                                     const std::string& protocol,
-                                     void** protocol_args) {
+                                     const std::string& metadata_connstring) {
     // get auto_discover and filters from env
-    bool auto_discover = get_auto_discover();
-    transfer_engine_.setAutoDiscover(auto_discover);
-    transfer_engine_.setWhitelistFilters(
-        get_auto_discover_filters(auto_discover));
+    transfer_engine_.setAutoDiscover(true);
 
     auto [hostname, port] = parseHostNameWithPort(local_hostname);
     int rc = transfer_engine_.init(metadata_connstring, local_hostname,
                                    hostname, port);
     if (rc != 0) {
         LOG(ERROR) << "Failed to initialize transfer engine, rc=" << rc;
-        return ErrorCode::INTERNAL_ERROR;
-    }
-
-    Transport* transport = nullptr;
-    if (protocol == "rdma") {
-        LOG(INFO) << "transport_type=rdma";
-        transport = transfer_engine_.installTransport("rdma", protocol_args);
-    } else if (protocol == "tcp") {
-        LOG(INFO) << "transport_type=tcp";
-        try {
-            transport = transfer_engine_.installTransport("tcp", protocol_args);
-        } catch (std::exception& e) {
-            LOG(ERROR) << "tcp_transport_install_failed error_message=\""
-                       << e.what() << "\"";
-            return ErrorCode::INTERNAL_ERROR;
-        }
-    } else {
-        LOG(ERROR) << "unsupported_protocol protocol=" << protocol;
-        return ErrorCode::INVALID_PARAMS;
-    }
-    if (!transport) {
-        LOG(ERROR) << "Failed to install transport";
         return ErrorCode::INTERNAL_ERROR;
     }
 
@@ -239,7 +212,6 @@ ErrorCode Client::InitTransferEngine(const std::string& local_hostname,
 
 std::optional<std::shared_ptr<Client>> Client::Create(
     const std::string& local_hostname, const std::string& metadata_connstring,
-    const std::string& protocol, void** protocol_args,
     const std::string& master_server_entry) {
     // If MOONCAKE_STORAGE_ROOT_DIR is set, use it as the storage root directory
     std::string storage_root_dir =
@@ -270,8 +242,7 @@ std::optional<std::shared_ptr<Client>> Client::Create(
     }
 
     // Initialize transfer engine
-    err = client->InitTransferEngine(local_hostname, metadata_connstring,
-                                     protocol, protocol_args);
+    err = client->InitTransferEngine(local_hostname, metadata_connstring);
     if (err != ErrorCode::OK) {
         LOG(ERROR) << "Failed to initialize transfer engine";
         return std::nullopt;
