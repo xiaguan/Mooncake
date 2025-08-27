@@ -447,13 +447,15 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
     }
 
     // Collect all transfer operations for parallel execution
-    std::vector<std::tuple<size_t, std::string, TransferFuture>>
-        pending_transfers;
     std::vector<tl::expected<void, ErrorCode>> results(object_keys.size());
     // Record batch get transfer latency (Submit + Wait)
     auto t0_batch_get = std::chrono::steady_clock::now();
 
-    // Submit all transfers in parallel
+    // Prepare batch submission
+    std::vector<Replica::Descriptor> valid_replicas;
+    std::vector<std::vector<Slice>> valid_slices;
+    std::vector<size_t> valid_indices;
+    
     for (size_t i = 0; i < object_keys.size(); ++i) {
         const auto& key = object_keys[i];
         const auto& replica_list = replica_lists[i];
@@ -476,32 +478,35 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
             continue;
         }
 
-        // Submit transfer operation asynchronously
-        auto future = transfer_submitter_->submit(replica, slices_it->second,
-                                                  TransferRequest::READ);
-        if (!future) {
-            LOG(ERROR) << "Failed to submit transfer operation for key: "
-                       << key;
-            results[i] = tl::unexpected(ErrorCode::TRANSFER_FAIL);
-            continue;
-        }
-
-        VLOG(1) << "Submitted transfer for key " << key
-                << " using strategy: " << static_cast<int>(future->strategy());
-
-        pending_transfers.emplace_back(i, key, std::move(*future));
+        valid_replicas.push_back(replica);
+        valid_slices.push_back(slices_it->second);
+        valid_indices.push_back(i);
     }
-
-    // Wait for all transfers to complete
-    for (auto& [index, key, future] : pending_transfers) {
-        ErrorCode result = future.get();
-        if (result != ErrorCode::OK) {
-            LOG(ERROR) << "Transfer failed for key: " << key
-                       << " with error: " << static_cast<int>(result);
-            results[index] = tl::unexpected(result);
-        } else {
-            VLOG(1) << "Transfer completed successfully for key: " << key;
-            results[index] = {};
+    
+    // Submit all transfers in a single batch
+    if (!valid_replicas.empty()) {
+        auto futures = transfer_submitter_->submitBatch(
+            valid_replicas, valid_slices, TransferRequest::READ);
+        
+        // Wait for all transfers to complete
+        for (size_t i = 0; i < futures.size(); ++i) {
+            if (!futures[i]) {
+                LOG(ERROR) << "Failed to submit transfer for key: " 
+                          << object_keys[valid_indices[i]];
+                results[valid_indices[i]] = tl::unexpected(ErrorCode::TRANSFER_FAIL);
+            } else {
+                ErrorCode result = futures[i]->get();
+                if (result != ErrorCode::OK) {
+                    LOG(ERROR) << "Transfer failed for key: " 
+                              << object_keys[valid_indices[i]]
+                              << " with error: " << static_cast<int>(result);
+                    results[valid_indices[i]] = tl::unexpected(result);
+                } else {
+                    VLOG(1) << "Transfer completed successfully for key: " 
+                           << object_keys[valid_indices[i]];
+                    results[valid_indices[i]] = {};
+                }
+            }
         }
     }
 

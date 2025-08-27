@@ -372,6 +372,22 @@ class TransferSubmitter {
         const Replica::Descriptor& replica, std::vector<Slice>& slices,
         Transport::TransferRequest::OpCode op_code);
 
+    /**
+     * @brief Submit multiple transfer operations in a single batch (optimized)
+     * 
+     * This method allows multiple transfers to share the same batch_id for better
+     * performance, similar to transfer_engine_bench.cpp approach.
+     * 
+     * @param replicas Vector of replica descriptors
+     * @param slices_list Vector of slice vectors for each replica
+     * @param op_code Transfer operation (READ/WRITE)
+     * @return Vector of TransferFutures, one per replica
+     */
+    std::vector<std::optional<TransferFuture>> submitBatch(
+        const std::vector<Replica::Descriptor>& replicas,
+        std::vector<std::vector<Slice>>& slices_list,
+        Transport::TransferRequest::OpCode op_code);
+
    private:
     TransferEngine& engine_;
     const std::string local_hostname_;

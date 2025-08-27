@@ -624,4 +624,118 @@ void TransferSubmitter::updateTransferMetrics(
     }
 }
 
+std::vector<std::optional<TransferFuture>> TransferSubmitter::submitBatch(
+    const std::vector<Replica::Descriptor>& replicas,
+    std::vector<std::vector<Slice>>& slices_list,
+    Transport::TransferRequest::OpCode op_code) {
+    
+    std::vector<std::optional<TransferFuture>> results;
+    results.reserve(replicas.size());
+    
+    // 快速路径：假设全部是memory replica且走transfer engine
+    // 收集所有的transfer requests到一个大batch
+    std::vector<Transport::TransferRequest> all_requests;
+    std::vector<size_t> request_counts;  // 记录每个replica有多少个请求
+    
+    for (size_t i = 0; i < replicas.size(); ++i) {
+        if (!replicas[i].is_memory_replica()) {
+            // 非内存replica，回退到单独处理
+            results.push_back(submit(replicas[i], slices_list[i], op_code));
+            request_counts.push_back(0);
+            continue;
+        }
+        
+        auto& mem_desc = replicas[i].get_memory_descriptor();
+        const auto& handles = mem_desc.buffer_descriptors;
+        const auto& slices = slices_list[i];
+        
+        size_t request_count = 0;
+        for (size_t j = 0; j < handles.size(); ++j) {
+            const auto& handle = handles[j];
+            const auto& slice = slices[j];
+            
+            Transport::SegmentHandle seg = engine_.openSegment(handle.segment_name_);
+            if (seg == static_cast<uint64_t>(ERR_INVALID_ARGUMENT)) {
+                LOG(ERROR) << "Failed to open segment " << handle.segment_name_;
+                results.push_back(std::nullopt);
+                request_counts.push_back(0);
+                break;
+            }
+            
+            Transport::TransferRequest request;
+            request.opcode = op_code;
+            request.source = static_cast<char*>(slice.ptr);
+            request.target_id = seg;
+            request.target_offset = handle.buffer_address_;
+            request.length = handle.size_;
+            
+            all_requests.push_back(request);
+            request_count++;
+        }
+        
+        if (request_count > 0) {
+            request_counts.push_back(request_count);
+            results.push_back(std::nullopt);  // 占位符，稍后填充
+        }
+    }
+    
+    // 如果有transfer engine请求，批量提交
+    if (!all_requests.empty()) {
+        const size_t total_batch_size = all_requests.size();
+        BatchID batch_id = engine_.allocateBatchID(total_batch_size);
+        if (batch_id == Transport::INVALID_BATCH_ID) {
+            LOG(ERROR) << "Failed to allocate batch ID for size " << total_batch_size;
+            // 所有transfer engine操作都失败
+            for (size_t i = 0; i < results.size(); ++i) {
+                if (request_counts[i] > 0) {
+                    results[i] = std::nullopt;
+                }
+            }
+            return results;
+        }
+        
+        // 提交整个批次
+        Status s = engine_.submitTransfer(batch_id, all_requests);
+        if (!s.ok()) {
+            LOG(ERROR) << "Failed to submit batch transfer, error: " << s.code();
+            engine_.freeBatchID(batch_id);
+            for (size_t i = 0; i < results.size(); ++i) {
+                if (request_counts[i] > 0) {
+                    results[i] = std::nullopt;
+                }
+            }
+            return results;
+        }
+        
+        // 为整个批次创建一个共享的state
+        auto batch_state = std::make_shared<TransferEngineOperationState>(
+            engine_, batch_id, total_batch_size);
+        
+        // 所有参与批处理的操作共享同一个state
+        // 注意：这意味着它们会一起完成
+        for (size_t i = 0; i < results.size(); ++i) {
+            if (request_counts[i] > 0 && !results[i].has_value()) {
+                results[i] = TransferFuture(batch_state);
+            }
+        }
+    }
+    
+    // 更新metrics
+    if (transfer_metric_) {
+        for (const auto& slices : slices_list) {
+            size_t total_bytes = 0;
+            for (const auto& slice : slices) {
+                total_bytes += slice.size;
+            }
+            if (op_code == Transport::TransferRequest::READ) {
+                transfer_metric_->total_read_bytes.inc(total_bytes);
+            } else if (op_code == Transport::TransferRequest::WRITE) {
+                transfer_metric_->total_write_bytes.inc(total_bytes);
+            }
+        }
+    }
+    
+    return results;
+}
+
 }  // namespace mooncake
