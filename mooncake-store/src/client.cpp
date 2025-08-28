@@ -371,7 +371,13 @@ tl::expected<std::vector<Replica::Descriptor>, ErrorCode> Client::Query(
 
 std::vector<tl::expected<std::vector<Replica::Descriptor>, ErrorCode>>
 Client::BatchQuery(const std::vector<std::string>& object_keys) {
+    auto t0_query = std::chrono::steady_clock::now();
     auto response = master_client_.BatchGetReplicaList(object_keys);
+    auto query_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0_query).count();
+    
+    LOG(INFO) << "BatchQuery RPC latency: " << query_us << " us for "
+              << object_keys.size() << " keys";
 
     // Check if we got the expected number of responses
     if (response.size() != object_keys.size()) {
@@ -450,9 +456,13 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
     std::vector<std::tuple<size_t, std::string, TransferFuture>>
         pending_transfers;
     std::vector<tl::expected<void, ErrorCode>> results(object_keys.size());
-    // Record batch get transfer latency (Submit + Wait)
-    auto t0_batch_get = std::chrono::steady_clock::now();
+    
+    // Calculate total data size for bandwidth calculation
+    size_t total_bytes = 0;
 
+    // Track submission time
+    auto t0_submit = std::chrono::steady_clock::now();
+    
     // Submit all transfers in parallel
     for (size_t i = 0; i < object_keys.size(); ++i) {
         const auto& key = object_keys[i];
@@ -476,6 +486,11 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
             continue;
         }
 
+        // Calculate size for this transfer
+        for (const auto& slice : slices_it->second) {
+            total_bytes += slice.size;
+        }
+
         // Submit transfer operation asynchronously
         auto future = transfer_submitter_->submit(replica, slices_it->second,
                                                   TransferRequest::READ);
@@ -491,7 +506,12 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
 
         pending_transfers.emplace_back(i, key, std::move(*future));
     }
-
+    
+    auto t1_submit = std::chrono::steady_clock::now();
+    
+    // Track transfer time
+    auto t0_transfer = std::chrono::steady_clock::now();
+    
     // Wait for all transfers to complete
     for (auto& [index, key, future] : pending_transfers) {
         ErrorCode result = future.get();
@@ -504,12 +524,28 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
             results[index] = {};
         }
     }
-
-    auto us_batch_get = std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - t0_batch_get)
-                            .count();
+    
+    auto t1_transfer = std::chrono::steady_clock::now();
+    
+    // Calculate latencies in microseconds
+    auto submit_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        t1_submit - t0_submit).count();
+    auto transfer_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          t1_transfer - t0_transfer).count();
+    auto total_us = submit_us + transfer_us;
+    
+    // Calculate bandwidth in GB/s
+    double bandwidth_gbps = 0.0;
+    if (transfer_us > 0) {
+        bandwidth_gbps = (total_bytes / 1e9) / (transfer_us / 1e6);
+    }
+    
+    LOG(INFO) << "BatchGet timing - submit: " << submit_us << " us, "
+              << "transfer: " << transfer_us << " us, "
+              << "bandwidth: " << bandwidth_gbps << " GB/s";
+    
     if (metrics_) {
-        metrics_->transfer_metric.batch_get_latency_us.observe(us_batch_get);
+        metrics_->transfer_metric.batch_get_latency_us.observe(total_us);
     }
 
     VLOG(1) << "BatchGet completed for " << object_keys.size() << " keys";
@@ -684,8 +720,14 @@ void Client::StartBatchPut(std::vector<PutOperation>& ops,
         slice_lengths.emplace_back(std::move(slice_sizes));
     }
 
+    auto t0_rpc = std::chrono::steady_clock::now();
     auto start_responses =
         master_client_.BatchPutStart(keys, slice_lengths, config);
+    auto rpc_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - t0_rpc).count();
+    
+    LOG(INFO) << "BatchPutStart RPC latency: " << rpc_us << " us for " 
+              << keys.size() << " keys";
 
     // Ensure response size matches request size
     if (start_responses.size() != ops.size()) {
@@ -868,7 +910,14 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
 
     // Process successful operations
     if (!successful_keys.empty()) {
+        auto t0_end = std::chrono::steady_clock::now();
         auto end_responses = master_client_.BatchPutEnd(successful_keys);
+        auto end_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() - t0_end).count();
+        
+        LOG(INFO) << "BatchPutEnd RPC latency: " << end_us << " us for "
+                  << successful_keys.size() << " keys";
+        
         if (end_responses.size() != successful_keys.size()) {
             LOG(ERROR) << "BatchPutEnd response size mismatch: expected "
                        << successful_keys.size() << ", got "
@@ -899,7 +948,14 @@ void Client::FinalizeBatchPut(std::vector<PutOperation>& ops) {
 
     // Process failed operations that need cleanup
     if (!failed_keys.empty()) {
+        auto t0_revoke = std::chrono::steady_clock::now();
         auto revoke_responses = master_client_.BatchPutRevoke(failed_keys);
+        auto revoke_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - t0_revoke).count();
+        
+        LOG(INFO) << "BatchPutRevoke RPC latency: " << revoke_us << " us for "
+                  << failed_keys.size() << " keys";
+        
         if (revoke_responses.size() != failed_keys.size()) {
             LOG(ERROR) << "BatchPutRevoke response size mismatch: expected "
                        << failed_keys.size() << ", got "
@@ -977,19 +1033,59 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchPut(
     std::vector<std::vector<Slice>>& batched_slices,
     const ReplicateConfig& config) {
     std::vector<PutOperation> ops = CreatePutOperations(keys, batched_slices);
+    
+    // Track RPC time (BatchPutStart)
+    auto t0_rpc_start = std::chrono::steady_clock::now();
     StartBatchPut(ops, config);
+    auto rpc_start_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                           std::chrono::steady_clock::now() - t0_rpc_start).count();
 
-    auto t0 = std::chrono::steady_clock::now();
+    // Track submission time
+    auto t0_submit = std::chrono::steady_clock::now();
     SubmitTransfers(ops);
+    auto t1_submit = std::chrono::steady_clock::now();
+    
+    // Track transfer time  
+    auto t0_transfer = std::chrono::steady_clock::now();
     WaitForTransfers(ops);
-    auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                  std::chrono::steady_clock::now() - t0)
-                  .count();
+    auto t1_transfer = std::chrono::steady_clock::now();
+    
+    // Calculate latencies in microseconds
+    auto submit_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        t1_submit - t0_submit).count();
+    auto transfer_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          t1_transfer - t0_transfer).count();
+    
+    // Track RPC time (BatchPutEnd/Revoke)
+    auto t0_rpc_end = std::chrono::steady_clock::now();
+    FinalizeBatchPut(ops);
+    auto rpc_end_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - t0_rpc_end).count();
+    
+    auto total_us = rpc_start_us + submit_us + transfer_us + rpc_end_us;
+    
+    // Calculate total data size
+    size_t total_bytes = 0;
+    for (const auto& op : ops) {
+        total_bytes += op.value_length;
+    }
+    
+    // Calculate bandwidth in GB/s
+    double bandwidth_gbps = 0.0;
+    if (transfer_us > 0) {
+        bandwidth_gbps = (total_bytes / 1e9) / (transfer_us / 1e6);
+    }
+    
+    LOG(INFO) << "BatchPut total timing - rpc_start: " << rpc_start_us << " us, "
+              << "submit: " << submit_us << " us, "
+              << "transfer: " << transfer_us << " us, "
+              << "rpc_end: " << rpc_end_us << " us, "
+              << "bandwidth: " << bandwidth_gbps << " GB/s";
+    
     if (metrics_) {
-        metrics_->transfer_metric.batch_put_latency_us.observe(us);
+        metrics_->transfer_metric.batch_put_latency_us.observe(total_us);
     }
 
-    FinalizeBatchPut(ops);
     return CollectResults(ops);
 }
 
