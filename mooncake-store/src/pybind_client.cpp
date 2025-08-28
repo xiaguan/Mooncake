@@ -151,8 +151,11 @@ tl::expected<void, ErrorCode> PyClient::setup_internal(
         current_glbseg_size += segment_size;
         LOG(INFO) << "Mounting segment: " << segment_size << " bytes, "
                   << current_glbseg_size << " of " << total_glbseg_size;
-        void *ptr = allocate_buffer_allocator_memory(segment_size);
-        if (!ptr) {
+
+        // use mmap to alloc huge page
+        void *ptr = mmap(nullptr, segment_size, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (ptr == MAP_FAILED) {
             LOG(ERROR) << "Failed to allocate segment memory";
             return tl::unexpected(ErrorCode::INVALID_PARAMS);
         }

@@ -448,14 +448,13 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
 
     // Collect all transfer operations for parallel execution
     std::vector<tl::expected<void, ErrorCode>> results(object_keys.size());
-    // Record batch get transfer latency (Submit + Wait)
-    auto t0_batch_get = std::chrono::steady_clock::now();
 
     // Prepare batch submission
     std::vector<Replica::Descriptor> valid_replicas;
     std::vector<std::vector<Slice>> valid_slices;
     std::vector<size_t> valid_indices;
-    
+    size_t total_bytes = 0;
+
     for (size_t i = 0; i < object_keys.size(); ++i) {
         const auto& key = object_keys[i];
         const auto& replica_list = replica_lists[i];
@@ -481,40 +480,65 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchGet(
         valid_replicas.push_back(replica);
         valid_slices.push_back(slices_it->second);
         valid_indices.push_back(i);
+        
+        // Calculate total bytes for bandwidth calculation
+        for (const auto& slice : slices_it->second) {
+            total_bytes += slice.size;
+        }
     }
-    
-    // Submit all transfers in a single batch
+
+    // Submit and wait for transfers with timing
     if (!valid_replicas.empty()) {
+        // Start timing for submit
+        auto t0_submit = std::chrono::steady_clock::now();
+        
         auto futures = transfer_submitter_->submitBatch(
             valid_replicas, valid_slices, TransferRequest::READ);
+        
+        auto submit_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t0_submit).count();
+        
+        // Start timing for wait
+        auto t0_wait = std::chrono::steady_clock::now();
         
         // Wait for all transfers to complete
         for (size_t i = 0; i < futures.size(); ++i) {
             if (!futures[i]) {
-                LOG(ERROR) << "Failed to submit transfer for key: " 
-                          << object_keys[valid_indices[i]];
-                results[valid_indices[i]] = tl::unexpected(ErrorCode::TRANSFER_FAIL);
+                LOG(ERROR) << "Failed to submit transfer for key: "
+                           << object_keys[valid_indices[i]];
+                results[valid_indices[i]] =
+                    tl::unexpected(ErrorCode::TRANSFER_FAIL);
             } else {
                 ErrorCode result = futures[i]->get();
                 if (result != ErrorCode::OK) {
-                    LOG(ERROR) << "Transfer failed for key: " 
-                              << object_keys[valid_indices[i]]
-                              << " with error: " << static_cast<int>(result);
+                    LOG(ERROR) << "Transfer failed for key: "
+                               << object_keys[valid_indices[i]]
+                               << " with error: " << static_cast<int>(result);
                     results[valid_indices[i]] = tl::unexpected(result);
                 } else {
-                    VLOG(1) << "Transfer completed successfully for key: " 
-                           << object_keys[valid_indices[i]];
+                    VLOG(1) << "Transfer completed successfully for key: "
+                            << object_keys[valid_indices[i]];
                     results[valid_indices[i]] = {};
                 }
             }
         }
-    }
-
-    auto us_batch_get = std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - t0_batch_get)
-                            .count();
-    if (metrics_) {
-        metrics_->transfer_metric.batch_get_latency_us.observe(us_batch_get);
+        
+        auto wait_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t0_wait).count();
+        
+        auto total_us = submit_us + wait_us;
+        double bandwidth_gbps = (total_bytes * 8.0) / (total_us * 1000.0);  // Gbps
+        
+        LOG(INFO) << "BatchGet transfer timing - "
+                  << "submit: " << submit_us << " us, "
+                  << "wait: " << wait_us << " us, "
+                  << "total: " << total_us << " us, "
+                  << "bandwidth: " << bandwidth_gbps << " GB/s, "
+                  << "bytes: " << total_bytes;
+        
+        if (metrics_) {
+            metrics_->transfer_metric.batch_get_latency_us.observe(total_us);
+        }
     }
 
     VLOG(1) << "BatchGet completed for " << object_keys.size() << " keys";
@@ -984,14 +1008,38 @@ std::vector<tl::expected<void, ErrorCode>> Client::BatchPut(
     std::vector<PutOperation> ops = CreatePutOperations(keys, batched_slices);
     StartBatchPut(ops, config);
 
-    auto t0 = std::chrono::steady_clock::now();
+    // Calculate total bytes for bandwidth
+    size_t total_bytes = 0;
+    for (const auto& op : ops) {
+        total_bytes += op.value_length;
+    }
+
+    // Time submit phase
+    auto t0_submit = std::chrono::steady_clock::now();
     SubmitTransfers(ops);
+    auto submit_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - t0_submit)
+                         .count();
+
+    // Time wait phase
+    auto t0_wait = std::chrono::steady_clock::now();
     WaitForTransfers(ops);
-    auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                  std::chrono::steady_clock::now() - t0)
-                  .count();
+    auto wait_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0_wait)
+                        .count();
+
+    auto total_us = submit_us + wait_us;
+    double bandwidth_gbps = (total_bytes * 8.0) / (total_us * 1000.0);  // Gbps
+
+    LOG(INFO) << "BatchPut transfer timing - "
+              << "submit: " << submit_us << " us, "
+              << "wait: " << wait_us << " us, "
+              << "total: " << total_us << " us, "
+              << "bandwidth: " << bandwidth_gbps << " GB/s, "
+              << "bytes: " << total_bytes;
+
     if (metrics_) {
-        metrics_->transfer_metric.batch_put_latency_us.observe(us);
+        metrics_->transfer_metric.batch_put_latency_us.observe(total_us);
     }
 
     FinalizeBatchPut(ops);
