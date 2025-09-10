@@ -1,3 +1,6 @@
 # Add allocator benchmark executable
 add_executable(allocator_bench allocator_bench.cpp)
 target_link_libraries(allocator_bench PRIVATE cachelib_memory_allocator mooncake_store)
+
+add_executable(store_batch_bench store_batch_bench.cpp)
+target_link_libraries(store_batch_bench PRIVATE cachelib_memory_allocator mooncake_store)
